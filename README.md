@@ -1,4 +1,4 @@
-# CamillaCompanion
+<h1><img src="docs/images/app-icon.png" alt="" width="40" height="40"> CamillaCompanion</h1>
 
 A macOS menu bar companion for CamillaDSP. Control volume, linked outputs,
 presets and live meters, with optional automatic audio routing.
@@ -61,11 +61,16 @@ updates and removal.
 | Companion Mode | Controls the configured DSP without changing macOS outputs. DSP On waits for required hardware and resumes when it reconnects; Off stays Off. |
 | Automatic Switching | Manages DSP and routes system audio through its virtual output when ready. Processed/Bypassed and fallback controls are available. |
 
-For example, enable Automatic Switching with DSP and Fallback on **Auto**.
-Connect the laptop’s configured USB interface: DSP starts and macOS audio routes
-through BlackHole once processing is ready. While the app manages that route,
-disconnecting returns audio to an available fallback, such as the MacBook
-speakers. Reconnecting resumes processing.
+**MacBook Pro: at your desk and on the go.** Enable Automatic Switching with
+DSP and Fallback on **Auto**. At your desk, connect the configured USB interface:
+DSP starts and audio routes through BlackHole once ready. Unplug the interface
+when leaving with your MacBook: the managed route returns to the previous
+available output, or an available fallback such as **MacBook Pro Speakers**.
+Reconnect at your desk to resume processing.
+
+Prefer a specific output? Set Fallback to **Force** and select it under
+**Fallback/Bypass Output**. Force enforces that device on both disconnection and
+reconnection.
 
 Switch modes in **Settings > General > Automatic Switching**. Entering Companion
 Mode keeps the current macOS output. Companion DSP Off and Quit also leave it
