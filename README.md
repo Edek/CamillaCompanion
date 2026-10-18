@@ -1,17 +1,27 @@
-<h1><img src="docs/images/app-icon.png" alt="" width="40" height="40"> CamillaCompanion</h1>
+<p align="center">
+  <img src="docs/images/app-icon.png" alt="CamillaCompanion icon" width="128" height="128">
+</p>
 
-A macOS menu bar companion for CamillaDSP. Control volume, linked outputs,
-presets and live meters, with optional automatic audio routing.
+<h1 align="center">CamillaCompanion</h1>
 
-**First beta: `0.1.0-beta.1`.** For macOS 13 or later on Apple Silicon (ARM64).
-Intel Macs have not been tested; this package contains an ARM64 executable only.
-The beta uses ad-hoc signing without Apple notarization. Hardware testing currently covers one Clarett-based setup.
-
-[Download beta for Apple Silicon](https://github.com/Edek/CamillaCompanion/releases/download/v0.1.0-beta.1/CamillaCompanion-0.1.0-beta.1-arm64.zip) · [Release notes](https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1)
+<p align="center">A macOS menu bar companion for CamillaDSP.</p>
 
 <p align="center">
-  <img src="docs/images/main-panel.png" alt="CamillaCompanion main panel" width="380">
+  <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1"><img src="https://img.shields.io/badge/version-0.1.0--beta.1-1687ed" alt="Version 0.1.0-beta.1"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-555555" alt="macOS 13 or later">
+  <img src="https://img.shields.io/badge/architecture-Apple_Silicon-22b8ad" alt="Apple Silicon">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-80b918" alt="GPL-3.0-only license"></a>
 </p>
+
+<p align="center">
+  <a href="https://github.com/Edek/CamillaCompanion/releases/download/v0.1.0-beta.1/CamillaCompanion-0.1.0-beta.1-arm64.zip"><strong>Download beta</strong></a>
+  &nbsp;·&nbsp; <a href="docs/first-time-setup.md">Setup guide</a>
+  &nbsp;·&nbsp; <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1">Release notes</a>
+</p>
+
+Control volume, linked outputs, presets and live meters from the menu bar.
+Use Companion Mode for DSP controls, or enable Automatic Switching to manage
+macOS audio routing when your interface connects and disconnects.
 
 ## Features
 
@@ -27,6 +37,10 @@ The beta uses ad-hoc signing without Apple notarization. Hardware testing curren
 Settings validate and save changes without an Apply button. Meter reads stop
 when the panel closes, metering is collapsed or DSP becomes unavailable. There
 is no recurring device scan or idle health polling.
+
+<p align="center">
+  <img src="docs/images/main-panel.png" alt="CamillaCompanion main panel" width="380">
+</p>
 
 ## Requirements and setup
 
@@ -53,6 +67,11 @@ also provides `camillacompanion setup` and `camillacompanion launch`.
 Follow the [first-time setup tutorial](docs/first-time-setup.md) for a step-by-step
 walkthrough. The [user guide](docs/user-guide.md) covers startup, storage, controls,
 updates and removal.
+
+**Beta compatibility:** macOS 13+ on Apple Silicon (ARM64). Intel is untested and
+not included. The app is ad-hoc signed without Apple notarization. Hardware
+validation currently covers one Clarett-based setup; see the
+[known limits](docs/release-notes.md#known-limits).
 
 ## Operating modes
 
