@@ -7,6 +7,8 @@ presets and live meters, with optional automatic audio routing.
 Intel Macs have not been tested; this package contains an ARM64 executable only.
 The beta uses ad-hoc signing without Apple notarization. Hardware testing currently covers one Clarett-based setup.
 
+<img src="docs/images/main-panel.png" alt="CamillaCompanion main panel" width="380">
+
 ## Features
 
 - Main volume and mute, plus named Aux faders with linked groups.
