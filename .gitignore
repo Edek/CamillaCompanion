@@ -1,0 +1,22 @@
+.build/
+.swiftpm/
+.DS_Store
+*.log
+local-config.json
+runtime-state.json
+runtime-state.json.lock
+# Existing prototype binary stays local; builds are reproducible from source.
+/clarett-watcher
+
+# Local release archives, evidence and review screenshots are published separately.
+/release-materials/
+
+# Local archives and separate investigations never enter the public export.
+/OLD/
+/work/
+/docs/diagnostics/
+__pycache__/
+*.py[cod]
+*.app/
+*.zip
+runtime-state.json*

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "bedroom",
+      "name": "Bedroom EQ",
+      "triggerUID": "REPLACE_WITH_CLARETT_UID",
+      "captureUID": "REPLACE_WITH_BLACKHOLE_UID",
+      "playbackUID": "REPLACE_WITH_CLARETT_UID",
+      "launchAgentLabel": "org.example.camilladsp",
+      "launchAgentPath": "~/Library/LaunchAgents/org.example.camilladsp.plist",
+      "websocketURL": "ws://127.0.0.1:1234",
+      "expectedCaptureDevice": "BlackHole 2ch",
+      "expectedPlaybackDevice": "Clarett+ 8Pre",
+      "routeAlerts": false,
+      "autoActivate": true,
+      "startupDelayMilliseconds": 1500
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+import Foundation
+import AutoAudioCore
+
+func runFeedbackChecks() throws {
+    let output = FeedbackEvent.output(uid: "bh", name: "BlackHole 2ch", restored: false)
+    var settings = FeedbackSettings()
+    try check(settings.durationSeconds == 4 && settings.errorDurationSeconds == 6, "Readable default durations")
+    var policy = FeedbackPolicy(settings: settings)
+    try check(policy.message(for: output) == nil, "HUD defaults off")
+    settings.mode = .allChanges; policy = FeedbackPolicy(settings: settings)
+    policy.seedOutput("speakers")
+    try check(policy.message(for: .output(uid: "speakers", name: "Speakers", restored: false)) == nil, "Initial unchanged output is silent")
+    try check(policy.message(for: output)?.text == "Output changed to BlackHole 2ch", "Use confirmed device name")
+    try check(policy.message(for: output) == nil, "Duplicate output callback is silent")
+    try check(policy.message(for: .output(uid: "speakers", name: "Speakers", restored: true))?.text == "Output restored to Speakers", "Restoration has accurate wording")
+    try check(policy.message(for: .gui(profile: "home", running: true))?.text == "CamillaGUI started", "GUI start message")
+    try check(policy.message(for: .gui(profile: "home", running: true)) == nil, "Repeated GUI state is silent")
+    let failure = FeedbackEvent.failure(source: "gui:home", message: "backend exited")
+    try check(policy.message(for: failure)?.isError == true, "Failures are distinguished")
+    try check(policy.message(for: failure) == nil, "Repeated failure is silent")
+    try check(policy.message(for: .gui(profile: "home", running: true))?.text == "CamillaGUI started", "Confirmed restart after exit is visible")
+    try check(policy.message(for: failure) != nil, "Restart resets failure deduplication")
+    _ = policy.message(for: .gui(profile: "home", running: false))
+    try check(policy.message(for: failure) != nil, "Successful transition resets failure deduplication")
+    settings.mode = .errorsOnly; policy = FeedbackPolicy(settings: settings)
+    try check(policy.message(for: output) == nil && policy.message(for: failure) != nil, "Errors-only policy")
+    settings.mode = .allChanges; settings.guiChanges = false; settings.outputChanges = false
+    policy = FeedbackPolicy(settings: settings)
+    try check(policy.message(for: output) == nil && policy.message(for: failure) == nil, "Category toggles respected")
+    settings = FeedbackSettings(); settings.mode = .allChanges
+    policy = FeedbackPolicy(settings: settings)
+    _ = policy.message(for: .gui(profile: "home", running: true))
+    try check(policy.message(for: .gui(profile: "second", running: true)) != nil, "GUI deduplication is per profile")
+    let decoded = try JSONDecoder().decode(FeedbackSettings.self, from: Data(#"{"mode":"allChanges","durationSeconds":0.5}"#.utf8))
+    try check(decoded.durationSeconds == 0.5 && decoded.errorDurationSeconds == 6 && decoded.guiChanges, "Partial settings preserve defaults and fractional duration")
+    var config = try ConfigurationLoader.load(from: URL(fileURLWithPath: "Examples/bedroom.json"))
+    config.feedback = decoded
+    try ConfigurationLoader.validate(config)
+    config.feedback!.durationSeconds = -1
+    do { try ConfigurationLoader.validate(config); throw CheckFailure.failed("Negative HUD duration accepted") }
+    catch is SwitcherError { }
+    config.feedback = decoded
+    for invalid in [-1.0, 0.49, 10.01, Double.infinity, Double.nan] {
+        config.feedback!.errorDurationSeconds = invalid
+        do { try ConfigurationLoader.validate(config); throw CheckFailure.failed("Invalid error HUD duration accepted") }
+        catch is SwitcherError { }
+    }
+    let customized = try JSONDecoder().decode(FeedbackSettings.self, from: Data(#"{"errorDurationSeconds":8}"#.utf8))
+    try check(customized.durationSeconds == 4 && customized.errorDurationSeconds == 8, "Independent error duration")
+    let roundTrip = try JSONDecoder().decode(FeedbackSettings.self, from: JSONEncoder().encode(customized))
+    try check(roundTrip.errorDurationSeconds == 8, "Error duration persists through encoding")
+
+    let outputMessage = FeedbackMessage(text: "Output changed to BlackHole 2ch", symbol: "speaker", category: .output)
+    let guiMessage = FeedbackMessage(text: "CamillaGUI started", symbol: "slider", category: .gui)
+    let stopped = FeedbackMessage(text: "CamillaGUI stopped", symbol: "slider", category: .gui)
+    let error = FeedbackMessage(text: "CamillaGUI failed", symbol: "warning", isError: true)
+    var burst = FeedbackBurst()
+    burst.append(outputMessage); burst.append(guiMessage); burst.append(stopped)
+    try check(burst.take()?.text == "Output changed to BlackHole 2ch · CamillaGUI stopped", "Burst retains both categories and latest GUI state")
+    try check(burst.take() == nil, "Burst drains once")
+    burst.append(guiMessage); burst.append(error); burst.append(outputMessage)
+    try check(burst.take() == error, "Failure wins over successes within a burst")
+    var presentation = FeedbackPresentation()
+    presentation.displayed(error)
+    try check(!presentation.append(outputMessage) && !presentation.append(guiMessage), "Visible error retains success until dismissal")
+    try check(presentation.takePending() == nil, "Success cannot replace visible error")
+    try check(presentation.dismissed()?.text == "Output changed to BlackHole 2ch · CamillaGUI started", "Retained successes display as one summary after error deadline")
+    try check(presentation.append(stopped), "Normal feedback resumes after error dismissal")
+    try check(presentation.takePending() == stopped, "Normal event gets a new presentation")
+    presentation.displayed(error)
+    _ = presentation.append(guiMessage)
+    try check(presentation.append(error) && presentation.takePending() == error, "A new failure may replace an existing failure")
+    try check(presentation.dismissed() == nil, "A newer failure discards stale retained successes")
+    settings = FeedbackSettings(); settings.mode = .allChanges
+    policy = FeedbackPolicy(settings: settings)
+    policy.setSilentMode(true)
+    try check(policy.message(for: output) == nil, "Silent Mode suppresses output changes")
+    try check(policy.message(for: .gui(profile: "home", running: true)) == nil, "Silent Mode suppresses GUI changes")
+    try check(policy.message(for: failure) == nil, "Silent Mode suppresses errors")
+    policy.setSilentMode(false)
+    try check(policy.message(for: output) == nil, "Quiet output state remains current after silence ends")
+    try check(policy.message(for: failure) == nil, "Quiet failure is deduplicated after silence ends")
+    try check(policy.message(for: .gui(profile: "home", running: true)) != nil, "Recovery from a quiet GUI failure remains a real transition")
+    try check(policy.message(for: .gui(profile: "home", running: true)) == nil, "Recovered GUI state deduplicates")
+    try check(policy.message(for: .output(uid: "speakers", name: "Speakers", restored: false)) != nil, "Real output transition resumes after silence")
+    settings.mode = .off; policy = FeedbackPolicy(settings: settings)
+    policy.setSilentMode(true); policy.setSilentMode(false)
+    try check(policy.message(for: failure) == nil && policy.message(for: output) == nil, "Disabling Silent Mode preserves configured feedback-off policy")
+    settings.mode = .errorsOnly; policy = FeedbackPolicy(settings: settings)
+    policy.setSilentMode(true); policy.setSilentMode(false)
+    try check(policy.message(for: output) == nil && policy.message(for: failure) != nil, "Disabling Silent Mode preserves configured errors-only policy")
+    presentation = FeedbackPresentation()
+    _ = presentation.append(outputMessage)
+    _ = presentation.append(guiMessage)
+    presentation.reset()
+    try check(presentation.takePending() == nil && presentation.dismissed() == nil, "Silencing during coalescing drains the entire pending burst")
+    presentation.displayed(error)
+    _ = presentation.append(outputMessage)
+    presentation.reset()
+    try check(presentation.dismissed() == nil, "Silencing during an error discards deferred success with no replay")
+    try check(presentation.append(guiMessage) && presentation.takePending() == guiMessage, "Fresh presentation resumes after quiet state resets")
+    print("Feedback checks: defaults, deduplication, restoration, categories, error recovery, and settings passed")
+}
