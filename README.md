@@ -9,7 +9,9 @@ The beta uses ad-hoc signing without Apple notarization. Hardware testing curren
 
 [Download beta for Apple Silicon](https://github.com/Edek/CamillaCompanion/releases/download/v0.1.0-beta.1/CamillaCompanion-0.1.0-beta.1-arm64.zip) · [Release notes](https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1)
 
-<img src="docs/images/main-panel.png" alt="CamillaCompanion main panel" width="380">
+<p align="center">
+  <img src="docs/images/main-panel.png" alt="CamillaCompanion main panel" width="380">
+</p>
 
 ## Features
 
