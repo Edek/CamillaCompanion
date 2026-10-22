@@ -101,6 +101,7 @@ public enum MenuBarCommandRequest {
     private var fallbackAutomaticOutput: AudioDevice?
     private var aboutWindow: AboutDiagnosticsWindow?
     private var diagnosticsProvider: (() -> String)?
+    private var dspVersionProvider: () -> String = { "Unavailable" }
     private var statusAccessibilityLabel: String?
     package private(set) var iconDimmed: Bool?
     private let waveformIcon = MenuBarController.makeWaveformIcon(opacity: 1)
@@ -641,8 +642,10 @@ public enum MenuBarCommandRequest {
 
     @objc package func menuAction(_ sender: NSMenuItem) { (sender.representedObject as? MenuAction)?.perform() }
 
-    public func setDiagnosticsProvider(_ provider: @escaping () -> String) {
+    public func setDiagnosticsProvider(_ provider: @escaping () -> String,
+                                       dspVersion: @escaping () -> String = { "Unavailable" }) {
         diagnosticsProvider = provider
+        dspVersionProvider = dspVersion
     }
 
     private func diagnosticText() -> String {
@@ -668,7 +671,8 @@ public enum MenuBarCommandRequest {
 
     private func showDiagnostics() {
         if aboutWindow == nil {
-            aboutWindow = AboutDiagnosticsWindow(provider: { [weak self] in self?.diagnosticText() ?? "Diagnostics unavailable" })
+            aboutWindow = AboutDiagnosticsWindow(provider: { [weak self] in self?.diagnosticText() ?? "Diagnostics unavailable" },
+                dspVersion: { [weak self] in self?.dspVersionProvider() ?? "Unavailable" })
         }
         prepareForOwnedWindow()
         aboutWindow?.show()

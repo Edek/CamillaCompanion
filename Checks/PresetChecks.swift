@@ -156,6 +156,17 @@ import AutoAudioPlatform
     let adjustment = try PresetCompatibility.classify(activeConfiguration: base, candidateConfiguration: configuration(changedDevices))
     try check(adjustment.requiresAudioRestart && adjustment.settingChanges == ["adjust_period: 1 → 2 seconds"],
         "Supported adjustment period difference reports exact processing restart impact")
+    changedDevices = baseDevices
+    changedDevices["adjust_interval_s"] = 0.125
+    changedDevices["rate_measure_interval_s"] = 1.0
+    let v5Base = try configuration(changedDevices)
+    changedDevices["adjust_interval_s"] = 0.25
+    changedDevices["rate_measure_interval_s"] = 2.0
+    let v5Intervals = try PresetCompatibility.classify(activeConfiguration: v5Base,
+                                                       candidateConfiguration: configuration(changedDevices))
+    try check(v5Intervals.requiresAudioRestart && v5Intervals.settingChanges == [
+        "adjust_interval_s: 0.125 → 0.25 seconds", "rate_measure_interval_s: 1 → 2 seconds"],
+        "v5 positive interval settings report seconds and require processing restart")
     for key in ["samplerate", "capture_samplerate", "resampler", "volume_limit", "worker_threads"] {
         changedDevices = baseDevices
         if key == "resampler" { changedDevices[key] = ["type": "AsyncSinc", "profile": "Fast"] }

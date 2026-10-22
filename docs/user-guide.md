@@ -1,6 +1,7 @@
 # Setup and user guide
 
-This guide covers the `.app` and executable beta. First beta `0.1.0-beta.1` targets macOS 13 or later on Apple Silicon
+This guide covers the local `.app` and executable candidate `0.1.0-beta.2`, which is
+not published. It targets macOS 13 or later on Apple Silicon
 (`arm64`). Intel Macs have not been tested, and no Intel executable is included.
 See the [release notes](release-notes.md#known-limits) for remaining acceptance checks.
 
@@ -22,6 +23,12 @@ removing quarantine. Local copy/ZIP checks do not establish downloaded-app appro
 For a step-by-step walkthrough, see [First-time setup](first-time-setup.md).
 
 Start with an installed CamillaDSP executable and a working YAML configuration.
+Supported engine versions are exactly **4.1.3** and **5.0.0-beta.2**, detected
+automatically on connection. The app does not bundle or install CamillaDSP,
+CamillaGUI or drivers. CamillaDSP 5 requires compatible YAML, and existing v4
+YAML is not migrated automatically. The official CamillaGUI backend v5 beta 2 is
+available, although its executable reports `camillagui 5.0.0-beta.1`. See the
+[compatibility guide](compatibility.md).
 The current setup flow uses a virtual capture output and a distinct physical
 playback output whose names/selectors match the YAML. Install those devices and
 any required drivers separately. CamillaGUI is optional.
@@ -110,10 +117,13 @@ macOS's own behavior when a device disappears.
 
 ## Volume, meters and presets
 
-Main Volume controls overall DSP gain independently of Aux trims. Aux groups move
-together while preserving level differences. Hold Shift while dragging or muting
-to affect only one Aux. Mixed mute labels identify a split group; only the muted
-channel's label is red.
+Main Volume controls overall DSP gain independently of Aux trims. Linked Aux groups
+move together while preserving each channel's level offset. Hold Shift while
+dragging or muting to affect only one Aux. Double-click a slider knob to reset to
+0 dB; linked Aux offsets are preserved. Hold Shift while double-clicking an Aux
+slider to reset only that channel. Reset changes volume only. Mute states and other
+settings remain unchanged, and CamillaDSP's allowed volume limits still apply.
+Mixed mute labels identify a split group; only the muted channel's label is red.
 
 Expand Live Metering to read levels while the panel is visible. Collapse it or
 close the panel to stop reads. Realtime follows levels; Peak Hold retains the
@@ -193,21 +203,17 @@ settings. Paths and device UIDs need review on another Mac.
 
 ## Updates and removal
 
-There is no automatic updater or public installer/uninstaller. Local executable
-updates follow the maintainer's [deployment procedure](deployment.md). Package
-staging and migration use the retained, verified artifact; a later installation
-request does not require rebuilding it.
+There is no automatic updater or public installer/uninstaller. Installed local
+app updates are maintainer-managed; this guide does not provide an end-user update
+workflow.
 
 ### Updating an installed app
 
 Keep a settings backup and the previous verified app. Use a reviewed replacement
 procedure that stops the controller cleanly, and keep the app at its registered
 `/Applications/CamillaCompanion.app` path. Do not copy over a running bundle or
-move a registered app without migrating its login job. The maintainer helper has an explicit `--update-installed-app` mode for the
-verified single-profile policy. Its isolated update and failed-readiness
-rollback fixtures cover the current names; live installation remains separate. See the
-[procedure](deployment.md#retained-packaged-app-updates). There is no in-app
-update action.
+move a registered app without updating its login job. There is no in-app update
+action.
 
 ### Older development builds
 
@@ -252,6 +258,8 @@ or imported files. The app does not provide an ownership-safe cleanup operation.
 - **Underruns or buffer instability:** investigate the CamillaDSP configuration,
   engine and hardware. CamillaCompanion does not tune or repair the audio engine.
 
-When sharing diagnostics, include version and operating mode, and review paths
-or other personal details first. The [repository](https://github.com/Edek/CamillaCompanion)
+When sharing diagnostics, include the app version and operating mode, and review
+paths or other personal details first. **More > About & Diagnostics** also displays
+the CamillaDSP version after readiness is verified, or `Unavailable` before then.
+The [repository](https://github.com/Edek/CamillaCompanion)
 is private; public issue reporting is not available yet.

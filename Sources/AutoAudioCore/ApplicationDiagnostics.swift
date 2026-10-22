@@ -4,8 +4,8 @@ import Foundation
 public enum ApplicationMetadata {
     public static let name = "CamillaCompanion"
     public static let description = "A macOS companion for CamillaDSP."
-    public static let version = "0.1.0-beta.1"
-    public static let buildIdentifier = "local beta"
+    public static let version = "0.1.0-beta.2"
+    public static let buildIdentifier = "beta"
     public static let copyright = "© 2026 Thiago Baldissarelli"
     public static let supportURL = URL(string: "https://ko-fi.com/camillacompanion")!
     public static let githubURL = URL(string: "https://github.com/Edek/CamillaCompanion")!

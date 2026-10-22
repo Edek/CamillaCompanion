@@ -15,6 +15,8 @@ import AutoAudioCore
     package let disclosure = NSButton(title: "Show Logs", target: nil, action: nil)
     package let diagnostics = NSTextView()
     package let diagnosticsScroll = NSScrollView()
+    package let dspVersionLabel = NSTextField(labelWithString: "CamillaDSP: Unavailable")
+    private let dspVersion: () -> String
     private var provider: () -> String
     private let openExternalURL: (URL) -> Void
     private let licensesURL: URL?
@@ -23,9 +25,11 @@ import AutoAudioCore
     package let licensesButton = NSButton(title: "Licenses", target: nil, action: nil)
 
     package init(provider: @escaping () -> String,
+                 dspVersion: @escaping () -> String = { "Unavailable" },
                  licensesURL: URL? = Bundle.main.url(forResource: "Licenses", withExtension: "txt"),
                  openExternalURL: @escaping (URL) -> Void = { _ = NSWorkspace.shared.open($0) }) {
         self.provider = provider
+        self.dspVersion = dspVersion
         self.licensesURL = licensesURL
         self.openExternalURL = openExternalURL
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 410, height: 380),
@@ -61,6 +65,10 @@ import AutoAudioCore
         credit.font = .systemFont(ofSize: 11); credit.textColor = .secondaryLabelColor
         stack.addArrangedSubview(credit)
         metadataLabels = [title, version, credit]
+        dspVersionLabel.font = .systemFont(ofSize: 11)
+        dspVersionLabel.textColor = .secondaryLabelColor
+        dspVersionLabel.isSelectable = true
+        stack.addArrangedSubview(dspVersionLabel)
         stack.addArrangedSubview(descriptionLabel)
         descriptionLabel.font = .systemFont(ofSize: 12)
         descriptionLabel.textColor = .secondaryLabelColor
@@ -135,6 +143,7 @@ import AutoAudioCore
     }
 
     package func readDiagnostics() {
+        dspVersionLabel.stringValue = "CamillaDSP: " + dspVersion()
         let text = provider()
         if diagnostics.string != text { diagnostics.string = text }
     }
@@ -149,6 +158,7 @@ import AutoAudioCore
     }
 
     package func diagnosticTextForCopy() -> String {
+        dspVersionLabel.stringValue = "CamillaDSP: " + dspVersion()
         let text = provider()
         if diagnostics.string != text { diagnostics.string = text }
         return text

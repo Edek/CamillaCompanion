@@ -226,6 +226,7 @@ private final class ClosePeer: @unchecked Sendable {
             try await testSuccessfulAuxReadClosesNormally(binaryResponse: binary)
             try await testSuccessfulPresetReadClosesNormally(binaryResponse: binary)
         }
+        try await testV5AuxReadAndVolumeMutation()
         for path in CommandPath.allCases {
             for iteration in 1...2 { try await testStalledReceiveTimesOut(path, iteration: iteration) }
             try await testStalledReceiveTimesOut(path, iteration: 1, stallUpgrade: true)
@@ -244,6 +245,7 @@ private final class ClosePeer: @unchecked Sendable {
             let name = try JSONDecoder().decode(String.self, from: Data(command.utf8))
             let value: Any
             switch name {
+            case "GetVersion": value = "4.1.3"
             case "GetState": value = "Running"
             case "GetConfigJson":
                 value = #"{"devices":{"capture":{"type":"CoreAudio","device":"Virtual"},"playback":{"type":"CoreAudio","device":"Physical"}},"pipeline":[]}"#
@@ -263,6 +265,68 @@ private final class ClosePeer: @unchecked Sendable {
         try await close.wait(); try await ended.wait()
         if let error = peer.error { throw error }
     }
+    private static func testV5AuxReadAndVolumeMutation() async throws {
+        let close = WireCompletion("v5 Aux peer receives Close frames")
+        let ended = WireCompletion("v5 Aux peer ends")
+        let peer = try ClosePeer(acknowledge: true, receivedClose: close, ended: ended,
+                                 connectionsToServe: 3) { command in
+            let decoded = try JSONSerialization.jsonObject(with: Data(command.utf8), options: [.fragmentsAllowed])
+            let name: String
+            if let legacy = decoded as? String {
+                guard legacy == "GetVersion" else { throw VerificationFailure.failed("Unexpected legacy v5 command: \(legacy)") }
+                return #"{"reply":"Invalid","error":"invalid type: string \"GetVersion\", expected internally tagged enum WsCommand at line 1 column 12"}"#
+            }
+            guard let object = decoded as? [String: Any], let modernName = object["command"] as? String else {
+                throw VerificationFailure.failed("Malformed v5 command: \(command)")
+            }
+            name = modernName
+            let value: Any
+            switch name {
+            case "GetVersion": value = "5.0.0-beta.2"
+            case "GetState": value = "Running"
+            case "GetConfigJson":
+                value = #"{"devices":{"capture":{"type":"CoreAudio","device":"Virtual","channels":2,"labels":["Left","Right"]},"playback":{"type":"CoreAudio","device":"Physical","channels":1,"labels":["Speaker"]}},"pipeline":[{"type":"Filter","channels":[0],"names":["aux1"]}],"filters":{"aux1":{"type":"Volume","parameters":{"fader":"Aux1","limit":0,"ramp_time_ms":10}}}}"#
+            case "GetFaders": value = (0..<5).map { _ in ["volume": -12.0, "mute": false] as [String: Any] }
+            case "GetSignalLevelsSinceLast":
+                value = ["capture_rms": [-30.0, -40.0], "capture_peak": [-10.0, -20.0],
+                         "playback_rms": [-25.0], "playback_peak": [-5.0]]
+            case "SetFaderVolume":
+                guard object["fader"] as? Int == 1 && object["value"] as? Double == -18 else {
+                    throw VerificationFailure.failed("Malformed v5 volume mutation: \(command)")
+                }
+                return #"{"reply":"SetFaderVolume","result":"Ok"}"#
+            default: throw VerificationFailure.failed("Unexpected v5 Aux command: \(name)")
+            }
+            return String(decoding: try JSONSerialization.data(withJSONObject: ["reply": name, "result": "Ok", "value": value]), as: UTF8.self)
+        }
+        peer.start()
+        let profile = Profile(id: "v5-wire", name: "v5 wire", triggerUID: "physical", captureUID: "virtual",
+            playbackUID: "physical", launchAgentLabel: "example.dsp", launchAgentPath: "/tmp/example.plist",
+            websocketURL: "ws://127.0.0.1:\(peer.port)", expectedCaptureDevice: "Virtual", expectedPlaybackDevice: "Physical")
+        let transport = CamillaAuxDSPTransport()
+        defer { transport.cancel() }
+        let read = try await transport.read(profile: profile)
+        try require(read.main?.volumeDB == -12 && read.faders.map(\.id) == [1], "v5 read exposes Main and the configured Aux1 fader")
+        try await transport.setVolume(id: 1, db: -18)
+        let meter = CamillaSignalLevelsTransport()
+        try await meter.connect(profile: profile)
+        let levels = try await meter.read()
+        try require(levels.input.map(\.label) == ["Left", "Right"] && levels.output.map(\.label) == ["Speaker"] &&
+                    levels.input.map(\.rmsDB) == [-30, -40] && levels.output.map(\.peakDB) == [-5],
+                    "v5 retained meter connection decodes its reply envelope and channel payload")
+        meter.cancel()
+        try await close.wait(); try await ended.wait()
+        if let error = peer.error { throw error }
+        let decoded = try peer.commands.map { try JSONSerialization.jsonObject(with: Data($0.utf8), options: [.fragmentsAllowed]) }
+        let names = decoded.map { command -> String in
+            if let legacy = command as? String { return legacy }
+            return (command as? [String: Any])?["command"] as? String ?? "invalid"
+        }
+        try require(names == ["GetVersion", "GetVersion", "GetState", "GetConfigJson", "GetFaders",
+                             "GetVersion", "GetVersion", "SetFaderVolume",
+                             "GetVersion", "GetVersion", "GetState", "GetConfigJson", "GetSignalLevelsSinceLast"],
+                    "v5 Aux, mutation and retained meter connections negotiate once and use typed commands")
+    }
     private static func testSuccessfulPresetReadClosesNormally(binaryResponse: Bool) async throws {
         let close = WireCompletion("Preset peer receives Close frame")
         let ended = WireCompletion("Preset peer ends")
@@ -271,6 +335,7 @@ private final class ClosePeer: @unchecked Sendable {
             let name = try JSONDecoder().decode(String.self, from: Data(command.utf8))
             let value: Any
             switch name {
+            case "GetVersion": value = "4.1.3"
             case "GetState": value = "Running"
             case "GetConfigJson":
                 value = #"{"devices":{"capture":{"type":"CoreAudio","device":"Virtual"},"playback":{"type":"CoreAudio","device":"Physical"}},"pipeline":[]}"#
@@ -299,6 +364,7 @@ private final class ClosePeer: @unchecked Sendable {
             let name = try JSONDecoder().decode(String.self, from: Data(command.utf8))
             let value: Any
             switch name {
+            case "GetVersion": value = "4.1.3"
             case "GetState": value = "Running"
             case "GetConfigJson":
                 value = #"{"devices":{"capture":{"type":"CoreAudio","device":"Virtual","channels":2,"labels":["Left","Right"]},"playback":{"type":"CoreAudio","device":"Physical","channels":1,"labels":["Speaker"]}},"pipeline":[]}"#
@@ -334,7 +400,7 @@ private final class ClosePeer: @unchecked Sendable {
         try await completed.wait()
         try await operation.value
         let names = try peer.commands.map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
-        try require(names == ["GetState", "GetConfigJson", "GetSignalLevelsSinceLast", "GetSignalLevelsSinceLast"],
+        try require(names == ["GetVersion", "GetState", "GetConfigJson", "GetSignalLevelsSinceLast", "GetSignalLevelsSinceLast"],
             "Single meter peer receives only the finite requested exchanges")
         transport.cancel()
         try await close.wait(); try await ended.wait()
@@ -370,7 +436,7 @@ private final class ClosePeer: @unchecked Sendable {
         try await close.wait(); try await ended.wait()
         if let error = peer.error { throw error }
         let names = try peer.commands.map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
-        try require(names == ["GetState", "GetConfigJson", "GetFaders"],
+        try require(names == ["GetVersion", "GetState", "GetConfigJson", "GetFaders"],
             "Canceled authorized Aux mutation sends no setter command or replacement connection")
     }
     private static func testStalledAuxSetterAcknowledgmentTimesOut() async throws {
@@ -412,9 +478,10 @@ private final class ClosePeer: @unchecked Sendable {
         try await observeAbortPeerEnd(peer, ended: ended, context: "Aux setter acknowledgment timeout", requiredRemoteEnds: 2)
         try require(peer.connectionCount == 2, "Aux setter uses one authorized read connection and one mutation connection")
         let commands = peer.commands
-        try require(commands.count == 4, "Timed-out Aux setter sends exactly one mutation without replay")
-        let names = try commands.prefix(3).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
-        try require(names == ["GetState", "GetConfigJson", "GetFaders"], "Aux setter authority came from a complete prior read")
+        try require(commands.count == 6, "Timed-out Aux setter sends one handshake per connection and exactly one mutation without replay")
+        let names = try commands.prefix(5).map { try JSONDecoder().decode(String.self, from: Data($0.utf8)) }
+        try require(Array(names.prefix(4)) == ["GetVersion", "GetState", "GetConfigJson", "GetFaders"] && names[4] == "GetVersion",
+                    "Aux setter authority came from a complete prior read and a new mutation connection")
     }
     private enum CommandPath: String, CaseIterable { case aux, preset }
     @MainActor private enum CommandTransport {
@@ -559,6 +626,7 @@ private final class ClosePeer: @unchecked Sendable {
         let name = try JSONDecoder().decode(String.self, from: Data(command.utf8))
         let value: Any
         switch name {
+        case "GetVersion": value = "4.1.3"
         case "GetState": value = "Running"
         case "GetConfigJson":
             value = #"{"devices":{"capture":{"type":"CoreAudio","device":"Virtual"},"playback":{"type":"CoreAudio","device":"Physical"}},"pipeline":[]}"#

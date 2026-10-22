@@ -5,10 +5,9 @@ import AutoAudioCore
 /// Read-only decoding of the CamillaDSP WebSocket protocol.
 public enum DSPReadiness {
     public static func value(from data: Data, command: String) throws -> Any {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let response = root[command] as? [String: Any],
-              response["result"] as? String == "Ok", let value = response["value"] else {
-            throw SwitcherError.message("CamillaDSP returned an invalid or unsuccessful \(command) response")
+        let response = try CamillaDSPProtocol.response(data, command: command)
+        guard let value = response["value"] else {
+            throw SwitcherError.message("CamillaDSP returned no value for \(command)")
         }
         return value
     }
@@ -43,6 +42,13 @@ public enum DSPReadiness {
     private var socket: URLSessionWebSocketTask?
     private var socketID: UUID?
     private var verified = false
+    private var verifiedVersion: (profileID: String, version: CamillaDSPVersion)?
+
+    /// Current readiness handshake only; never queries DSP or retains a stopped engine's version.
+    public func detectedVersion(profileID: String?) -> CamillaDSPVersion? {
+        guard verified, let value = verifiedVersion, value.profileID == profileID else { return nil }
+        return value.version
+    }
     private var socketFailure: String?
     private let runCommand: ([String]) async throws -> ProcessResult
     private let sleep: (Int) async throws -> Void
@@ -200,7 +206,7 @@ public enum DSPReadiness {
         log("CamillaDSP service unloaded")
     }
     private func disconnect() {
-        socketID = nil; verified = false; socketFailure = nil
+        socketID = nil; verified = false; verifiedVersion = nil; socketFailure = nil
         connection?.close(); connection = nil; socket = nil
     }
     public func verifyReadiness(_ profile: Profile) async throws {
@@ -224,12 +230,19 @@ public enum DSPReadiness {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: deadline)
         defer { deadline.cancel() }
         socket.resume()
+        var detected: CamillaDSPVersion?
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
-                let config = try await query("GetConfigJson", socket: socket)
+                let session = try await CamillaDSPProtocolSession.connect { command in
+                    try await CamillaDSPWire.request(command, socket: socket,
+                        invalidResponse: "Unsupported CamillaDSP WebSocket message")
+                }
+                detected = session.version
+                log("CamillaDSP \(session.version.text) detected on protocol v\(session.version.dialect.rawValue)")
+                let config = try await query(.getConfigJson, session: session)
                 try DSPReadiness.validateConfiguration(config, profile: profile)
-                let state = try await query("GetState", socket: socket)
+                let state = try await query(.getState, session: session)
                 log("CamillaDSP reported state: \(String(describing: state))")
                 do { try DSPReadiness.validateState(state) }
                 catch DSPFailure.starting { throw DSPFailure.starting }
@@ -237,7 +250,7 @@ public enum DSPReadiness {
                     let readinessError = error.localizedDescription
                     let isTransient = error is DSPFailure
                     // Diagnostic only, once on failure, within the same deadline.
-                    let reason = try? await query("GetStopReason", socket: socket)
+                    let reason = try? await query(.getStopReason, session: session)
                     let diagnostic = "\(readinessError). Stop reason: \(reason.map { String(describing: $0) } ?? "unavailable"). Audio routing was not activated."
                     if isTransient { throw DSPFailure.unavailable(diagnostic) }
                     throw SwitcherError.message(diagnostic)
@@ -247,6 +260,7 @@ public enum DSPReadiness {
             guard socketID == id, socketFailure == nil, socket.state == .running else {
                 throw SwitcherError.message(socketFailure ?? "Readiness verification was superseded or disconnected")
             }
+            verifiedVersion = detected.map { (profile.id, $0) }
             verified = true
             // Keep only delegate-based transport failure observation. No receive loop,
             // recurring health query, ping, reconnect, or timer remains active.
@@ -259,10 +273,8 @@ public enum DSPReadiness {
             throw error
         }
     }
-    private func query(_ command: String, socket: URLSessionWebSocketTask) async throws -> Any {
-        let request = String(decoding: try JSONEncoder().encode(command), as: UTF8.self)
-        let data = try await CamillaDSPWire.request(request, socket: socket,
-            invalidResponse: "Unsupported CamillaDSP WebSocket message")
-        return try DSPReadiness.value(from: data, command: command)
+    private func query(_ command: CamillaDSPCommand, session: CamillaDSPProtocolSession) async throws -> Any {
+        let data = try await session.request(command)
+        return try DSPReadiness.value(from: data, command: command.name)
     }
 }

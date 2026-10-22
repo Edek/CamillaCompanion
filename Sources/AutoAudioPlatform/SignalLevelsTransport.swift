@@ -4,7 +4,7 @@ import AutoAudioCore
 
 public enum SignalLevelsProtocol {
     public static func decode(_ data: Data, inputLabels: [String], outputLabels: [String], command: String = "GetSignalLevels") throws -> SignalLevels {
-        let body = try AuxDSPProtocol.response(data, command: command)
+        let body = try CamillaDSPProtocol.response(data, command: command)
         guard let value = body["value"] as? [String: Any] else { throw SwitcherError.message("Missing signal levels") }
         func channels(_ side: String, labels: [String]) throws -> [SignalChannelLevel] {
             guard let rms = value[side + "_rms"] as? [Any], let peak = value[side + "_peak"] as? [Any],
@@ -22,7 +22,7 @@ public enum SignalLevelsProtocol {
         return try SignalLevels(input: channels("capture", labels: inputLabels), output: channels("playback", labels: outputLabels))
     }
     public static func labels(configuration: Data) throws -> (input: [String], output: [String]) {
-        let reply = try AuxDSPProtocol.response(configuration, command: "GetConfigJson")
+        let reply = try CamillaDSPProtocol.response(configuration, command: "GetConfigJson")
         guard let json = reply["value"] as? String, let data = json.data(using: .utf8),
               let config = try JSONSerialization.jsonObject(with: data) as? [String: Any], let devices = config["devices"] as? [String: Any] else {
             throw SwitcherError.message("Missing DSP channel configuration")
@@ -57,7 +57,7 @@ public struct SignalLevelsIntervalDecoder: Sendable {
         self.inputLabels = inputLabels; self.outputLabels = outputLabels
     }
     public mutating func decode(_ data: Data) throws -> SignalLevels {
-        let body = try AuxDSPProtocol.response(data, command: "GetSignalLevelsSinceLast")
+        let body = try CamillaDSPProtocol.response(data, command: "GetSignalLevelsSinceLast")
         guard let value = body["value"] as? [String: Any] else { throw SwitcherError.message("Missing interval signal levels") }
         func values(_ key: String, count: Int) throws -> [Double] {
             guard let array = value[key] as? [Any], array.isEmpty || array.count == count else {
@@ -105,6 +105,7 @@ public struct SignalLevelsIntervalDecoder: Sendable {
 @MainActor public final class CamillaSignalLevelsTransport: SignalLevelsTransport {
     private var connection: BoundedWebSocketConnection?
     private var socket: URLSessionWebSocketTask?
+    private var protocolSession: CamillaDSPProtocolSession?
     private var generation = UUID()
     private var inputLabels: [String] = []
     private var outputLabels: [String] = []
@@ -113,7 +114,7 @@ public struct SignalLevelsIntervalDecoder: Sendable {
     public func cancel() {
         generation = UUID()
         connection?.close()
-        socket = nil; connection = nil; inputLabels = []; outputLabels = []; intervalDecoder = nil
+        socket = nil; connection = nil; protocolSession = nil; inputLabels = []; outputLabels = []; intervalDecoder = nil
     }
     public func connect(profile: Profile) async throws {
         try Task.checkCancellation()
@@ -124,11 +125,11 @@ public struct SignalLevelsIntervalDecoder: Sendable {
         let connection = BoundedWebSocketConnection(url: url, timeout: 3)
         let socket = connection.socket!
         self.connection = connection; self.socket = socket; socket.resume()
-        let state = try await exchange("\"GetState\"")
+        let state = try await exchange(.getState)
         guard token == generation else { throw CancellationError() }
         try Task.checkCancellation()
         try DSPReadiness.validateState(DSPReadiness.value(from: state, command: "GetState"))
-        let config = try await exchange("\"GetConfigJson\"")
+        let config = try await exchange(.getConfigJson)
         guard token == generation else { throw CancellationError() }
         try Task.checkCancellation()
         try DSPReadiness.validateConfiguration(DSPReadiness.value(from: config, command: "GetConfigJson"), profile: profile)
@@ -139,7 +140,7 @@ public struct SignalLevelsIntervalDecoder: Sendable {
     }
     public func read() async throws -> SignalLevels {
         let token = generation
-        let data = try await exchange("\"GetSignalLevelsSinceLast\"")
+        let data = try await exchange(.getSignalLevelsSinceLast)
         guard token == generation else { throw CancellationError() }
         do {
             guard var decoder = intervalDecoder else { throw SwitcherError.message("Interval meter configuration is unavailable") }
@@ -150,14 +151,22 @@ public struct SignalLevelsIntervalDecoder: Sendable {
             throw SwitcherError.message("Interval metering requires CamillaDSP GetSignalLevelsSinceLast support. No current-chunk fallback is used. " + error.localizedDescription)
         }
     }
-    private func exchange(_ command: String) async throws -> Data {
+    private func exchange(_ command: CamillaDSPCommand) async throws -> Data {
         guard let socket, let connection else { throw SwitcherError.message("Live Metering is disconnected") }
+        let token = generation
         let deadline = DSPConnectionDeadline.schedule(nanoseconds: 3_000_000_000) { connection.abort() }
         defer { deadline.cancel() }
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            let result = try await CamillaDSPWire.request(command, socket: socket,
-                invalidResponse: "Invalid meter response")
+            if protocolSession == nil {
+                let session = try await CamillaDSPProtocolSession.connect { command in
+                    try await CamillaDSPWire.request(command, socket: socket, invalidResponse: "Invalid meter response")
+                }
+                guard token == generation else { throw CancellationError() }
+                protocolSession = session
+            }
+            guard let session = protocolSession else { throw SwitcherError.message("Meter protocol unavailable") }
+            let result = try await session.request(command)
             try Task.checkCancellation()
             return result
         } onCancel: {

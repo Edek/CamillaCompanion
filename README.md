@@ -7,16 +7,16 @@
 <p align="center">A macOS menu bar companion for CamillaDSP.</p>
 
 <p align="center">
-  <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1"><img src="https://img.shields.io/badge/version-0.1.0--beta.1-1687ed" alt="Version 0.1.0-beta.1"></a>
+  <img src="https://img.shields.io/badge/local_candidate-0.1.0--beta.2_unpublished-1687ed" alt="Local candidate 0.1.0-beta.2, unpublished">
   <img src="https://img.shields.io/badge/macOS-13%2B-555555" alt="macOS 13 or later">
   <img src="https://img.shields.io/badge/architecture-Apple_Silicon-22b8ad" alt="Apple Silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-80b918" alt="GPL-3.0-only license"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Edek/CamillaCompanion/releases/download/v0.1.0-beta.1/CamillaCompanion-0.1.0-beta.1-arm64.zip"><strong>Download beta</strong></a>
+  <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1"><strong>Latest published beta</strong></a>
   &nbsp;·&nbsp; <a href="docs/first-time-setup.md">Setup guide</a>
-  &nbsp;·&nbsp; <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1">Release notes</a>
+  &nbsp;·&nbsp; <a href="docs/release-notes.md">Candidate notes</a>
 </p>
 
 Control volume, linked outputs, presets and live meters from the menu bar.
@@ -33,6 +33,9 @@ macOS audio routing when your interface connects and disconnects.
 - Configurable fallback output, Start at Login and a pinnable panel.
 - Optional menu bar icon and direct access to the settings folder.
 - Guided setup with a one-time search for existing DSP and GUI installations.
+- About & Diagnostics show the app version and verified CamillaDSP version; the
+  DSP field says Unavailable until readiness is confirmed.
+- Double-click a slider knob to reset to 0 dB; DSP limits still apply.
 
 Settings validate and save changes without an Apply button. Meter reads stop
 when the panel closes, metering is collapsed or DSP becomes unavailable. There
@@ -50,7 +53,9 @@ or interface drivers. CamillaGUI is optional.
 
 The current setup flow expects separate virtual capture and physical playback
 outputs matching the YAML. It manages a configured local DSP job; it does not
-attach to any independently running CamillaDSP instance.
+attach to any independently running CamillaDSP instance. Supported DSP versions
+are exactly **4.1.3** and **5.0.0-beta.2**, detected automatically. See the
+[compatibility guide](docs/compatibility.md).
 
 [Build and stage the app](docs/building.md). For a new installation, place
 `CamillaCompanion.app` in Applications and open it to start setup. See
@@ -68,9 +73,9 @@ Follow the [first-time setup tutorial](docs/first-time-setup.md) for a step-by-s
 walkthrough. The [user guide](docs/user-guide.md) covers startup, storage, controls,
 updates and removal.
 
-**Beta compatibility:** macOS 13+ on Apple Silicon (ARM64). Intel is untested and
-not included. The app is ad-hoc signed without Apple notarization. Hardware
-validation currently covers one Clarett-based setup; see the
+**Local candidate:** `0.1.0-beta.2`, not published. macOS 13+ on Apple Silicon
+(ARM64); Intel is untested and not included. The app is ad-hoc signed without
+Apple notarization. Hardware validation remains limited; see the
 [known limits](docs/release-notes.md#known-limits).
 
 ## Operating modes
@@ -113,14 +118,13 @@ scope.
 ## Future roadmap
 
 - Improve installation, updates and removal, and broaden macOS and hardware testing.
-- Add interface profiles that associate each audio interface with its DSP configuration
-  and an optional preset.
-- Add a keyboard shortcut to show the panel, with mute shortcuts and Dim considered
-  if users request them.
+- Consider interface profiles that associate each audio interface with its DSP
+  configuration and an optional preset.
+- Consider a keyboard shortcut to show the panel; no shortcut is committed.
 - Consider translations if there is demand.
 
-These are future plans without committed dates. The first beta focuses on one
-configured DSP setup; multi-interface setup is not included yet.
+These are future plans without committed dates or guarantees. Multi-interface setup
+is not included in this candidate.
 
 ## Development and release status
 

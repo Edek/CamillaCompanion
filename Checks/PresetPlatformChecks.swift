@@ -7,6 +7,9 @@ import AutoAudioPlatform
     var target: [String: Any]
     var configurationsByPath: [String: [String: Any]] = [:]
     var path = "/previous.yaml"
+    var dialect: CamillaDSPDialect = .v4
+    var versionChangesAfterFirstConnection = false
+    private var legacyVersionProbeCount = 0
     var commands: [String] = []
     var writes: [String] = []
     var ignoreForward = false
@@ -34,6 +37,11 @@ import AutoAudioPlatform
         String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
     }
     func reply(_ name: String, _ value: Any? = nil) throws -> Data {
+        if dialect == .v5 {
+            var body: [String: Any] = ["reply": name, "result": "Ok"]
+            if let value { body["value"] = value }
+            return try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        }
         var body: [String: Any] = ["result": "Ok"]
         if let value { body["value"] = value }
         return try JSONSerialization.data(withJSONObject: [name: body], options: [.sortedKeys])
@@ -43,10 +51,25 @@ import AutoAudioPlatform
         for text in input {
             let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
             let mapping = decoded as? [String: Any]
-            let name = decoded as? String ?? mapping!.keys.first!
-            let value = mapping?[name]
+            let name = decoded as? String ?? mapping?["command"] as? String ?? mapping!.keys.first!
+            let value = mapping?["value"] ?? mapping?[name]
             commands.append(name)
             switch name {
+            case "GetVersion":
+                if decoded is String {
+                    if dialect == .v5 || (versionChangesAfterFirstConnection && legacyVersionProbeCount > 0) {
+                        legacyVersionProbeCount += 1
+                        replies.append(try JSONSerialization.data(withJSONObject: ["reply": "Invalid",
+                            "error": #"invalid type: string "GetVersion", expected internally tagged enum WsCommand at line 1 column 12"#]))
+                    } else {
+                        legacyVersionProbeCount += 1
+                        replies.append(try JSONSerialization.data(withJSONObject: ["GetVersion": ["result": "Ok", "value": "4.1.3"]]))
+                    }
+                } else {
+                    let changed = versionChangesAfterFirstConnection && legacyVersionProbeCount > 1
+                    if changed { dialect = .v5 }
+                    replies.append(try reply(name, (dialect == .v5 || changed) ? "5.0.0-beta.2" : "4.1.3"))
+                }
             case "GetState":
                 if stateFailures > 0 { stateFailures -= 1; throw URLError(.networkConnectionLost) }
                 let state = states.isEmpty ? "Running" : states.removeFirst()
@@ -103,6 +126,34 @@ import AutoAudioPlatform
     try check(successful.activePath == file.path && successful.activeTitle == "Listening", "Preset success requires actual JSON and path readback")
     try check(success.writes == ["SetConfigJson", "SetConfigFilePath"] && !success.commands.contains("Reload"),
               "Preset applies immutable validated JSON and preserves faders without reload or replay")
+    let modern = PresetWireFixture(); modern.dialect = .v5
+    let modernTransport = transport(modern)
+    let modernCatalog = try await modernTransport.inspect(profile: profile, paths: [file.path])
+    try check(modernCatalog.entries.first?.available == true && modern.commands.contains("GetVersion"),
+              "v5 preset inspection negotiates and decodes the modern reply envelope")
+    let modernApplied = try await modernTransport.apply(path: file.path, profile: profile,
+                                                        expectedImpact: modernCatalog.entries[0].impact)
+    try check(modernApplied.activePath == file.path && modernApplied.activeTitle == "Listening" &&
+              modern.writes == ["SetConfigJson", "SetConfigFilePath"],
+              "v5 preset apply verifies config, path, and preserved faders")
+    let modernRecovery = PresetWireFixture(); modernRecovery.dialect = .v5; modernRecovery.ignoreForward = true
+    let modernRecoveryTransport = transport(modernRecovery)
+    let modernRecoveryCatalog = try await modernRecoveryTransport.inspect(profile: profile, paths: [file.path])
+    var modernRecovered = false
+    do {
+        _ = try await modernRecoveryTransport.apply(path: file.path, profile: profile,
+                                                    expectedImpact: modernRecoveryCatalog.entries[0].impact)
+    } catch PresetFailure.restored(_, let recoveredState) {
+        modernRecovered = recoveredState.activePath == "/previous.yaml" && recoveredState.activeTitle == "Original"
+    }
+    try check(modernRecovered && modernRecovery.writes == ["SetConfigJson", "SetConfigFilePath", "SetConfigJson", "SetConfigFilePath"],
+              "v5 rollback verifies restored JSON and pointer without replaying faders")
+    let changedVersion = PresetWireFixture(); changedVersion.versionChangesAfterFirstConnection = true
+    var versionRejected = false
+    do { _ = try await transport(changedVersion).apply(path: file.path, profile: profile) }
+    catch is CamillaDSPVersionChanged { versionRejected = true }
+    try check(versionRejected && changedVersion.writes.isEmpty && !changedVersion.commands.contains("ReadConfigFile"),
+              "Preset version change between connections rejects before catalog read or mutation")
     let mismatch = PresetWireFixture()
     var devices = mismatch.target["devices"] as! [String: Any]; devices["chunksize"] = 2048; mismatch.target["devices"] = devices
     let reference = directory.appendingPathComponent("previous.yaml")

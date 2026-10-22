@@ -123,10 +123,10 @@ import AutoAudioPlatform
         panel.simulateVolumePointer(id: 0, type: .leftMouseDown, db: 12, modifiers: .shift)
         panel.simulateVolumePointer(id: 0, type: .leftMouseUp, db: 12)
         var result = ["above-travel grab release sends no gain": updates == 0 && panel.displayedVolumes[0] == 12,
-                      "Main Shift keeps its ordinary gesture scope": gestureIntent == .group]
+                      "Main knob click starts no DSP gesture": gestureIntent == nil]
         panel.simulateVolumePointer(id: 0, type: .leftMouseDown, db: 12)
         panel.simulateVolumePointer(id: 0, type: .leftMouseDragged, db: 11.8)
-        result["above-travel tiny movement stays continuous"] = abs((panel.displayedVolumes[0] ?? 0) - 11.8) < 1e-7 && updates == 1
+        result["above-travel tiny movement stays continuous"] = abs((panel.displayedVolumes[0] ?? 0) - 11.8) < 1e-7 && updates == 1 && gestureIntent == .group
         panel.cancelVolumeDrag()
         state.main?.volumeDB = -70; panel.render(state)
         panel.simulateVolumePointer(id: 0, type: .leftMouseDown, db: -70)

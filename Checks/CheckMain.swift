@@ -156,6 +156,7 @@ enum CheckMain {
             try runAuxFaderScaleChecks()
             try await runAuxFaderDisplayChecks()
             try await runAuxPlatformChecks()
+            try await runCamillaDSPProtocolChecks()
             try await runMainVolumeChecks()
             try await runSignalLevelsChecks()
             try await runPresetChecks()

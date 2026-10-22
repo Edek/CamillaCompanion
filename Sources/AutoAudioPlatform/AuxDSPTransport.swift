@@ -2,16 +2,8 @@ import Foundation
 import CoreFoundation
 import AutoAudioCore
 
-/// The v4.1.3 wire format for Main and enabled Aux Volume filters.
+/// Domain validation for Main and enabled Aux Volume filters, independent of wire version.
 public enum AuxDSPProtocol {
-    public static func response(_ data: Data, command: String) throws -> [String: Any] {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              root.count == 1, let body = root[command] as? [String: Any],
-              body["result"] as? String == "Ok" else {
-            throw SwitcherError.message("CamillaDSP rejected or returned an invalid \(command) response")
-        }
-        return body
-    }
     private static func number(_ value: Any?) -> Double? {
         guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
               value.doubleValue.isFinite else { return nil }
@@ -22,9 +14,14 @@ public enum AuxDSPProtocol {
         return value.boolValue
     }
     public static func state(configuration: Data, faders: Data) throws -> AuxDSPState {
-        let configReply = try response(configuration, command: "GetConfigJson")
-        guard let json = configReply["value"] as? String, let jsonData = json.data(using: .utf8),
-              let config = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+        let configReply = try CamillaDSPProtocol.response(configuration, command: "GetConfigJson")
+        guard let json = configReply["value"] as? String else {
+            throw SwitcherError.message("Missing active DSP configuration")
+        }
+        return try state(configurationJSON: json, faders: faders)
+    }
+    public static func state(configurationJSON json: String, faders: Data) throws -> AuxDSPState {
+        guard let config = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
               let pipeline = config["pipeline"] as? [[String: Any]] else {
             throw SwitcherError.message("CamillaDSP did not return an active configuration pipeline")
         }
@@ -61,7 +58,7 @@ public enum AuxDSPProtocol {
                 limits[id] = min(limits[id] ?? 50, limit)
             }
         }
-        let faderReply = try response(faders, command: "GetFaders")
+        let faderReply = try CamillaDSPProtocol.response(faders, command: "GetFaders")
         guard let values = faderReply["value"] as? [[String: Any]], values.count == 5 else {
             throw SwitcherError.message("CamillaDSP returned an invalid fader list")
         }
@@ -82,15 +79,15 @@ public enum AuxDSPProtocol {
               let mainMuted = boolean(values[0]["mute"]) else { throw SwitcherError.message("Invalid Main fader value") }
         return AuxDSPState(faders: result, main: AuxFader(id: 0, name: "Main Volume", volumeDB: mainDB, muted: mainMuted, maximumDB: mainLimit))
     }
-    public static func volumeCommand(id: Int, db: Double) throws -> String {
+    public static func volumeCommand(id: Int, db: Double) throws -> CamillaDSPCommand {
         guard (0...4).contains(id), db.isFinite, (-150...50).contains(db) else {
             throw SwitcherError.message("Invalid Aux volume request")
         }
-        return String(decoding: try JSONSerialization.data(withJSONObject: ["SetFaderVolume": [id, db]]), as: UTF8.self)
+        return .setFaderVolume(id, db)
     }
-    public static func muteCommand(id: Int, muted: Bool) throws -> String {
+    public static func muteCommand(id: Int, muted: Bool) throws -> CamillaDSPCommand {
         guard (0...4).contains(id) else { throw SwitcherError.message("Invalid Aux mute request") }
-        return String(decoding: try JSONSerialization.data(withJSONObject: ["SetFaderMute": [id, muted]]), as: UTF8.self)
+        return .setFaderMute(id, muted)
     }
 }
 
@@ -102,6 +99,7 @@ public enum AuxDSPProtocol {
     private var generation = UUID()
     private var profile: Profile?
     private var state: AuxDSPState?
+    private var protocolVersion: CamillaDSPVersion?
     private var tail: Task<Void, Never>?
     private var activeSocket: URLSessionWebSocketTask?
     private var activeConnection: BoundedWebSocketConnection?
@@ -111,7 +109,7 @@ public enum AuxDSPProtocol {
         self.transaction = transaction
     }
     public func cancel() {
-        generation = UUID(); profile = nil; state = nil
+        generation = UUID(); profile = nil; state = nil; protocolVersion = nil
         activeCancel?(); activeCancel = nil
         activeConnection?.abort()
         activeSocket = nil; activeConnection = nil
@@ -148,8 +146,8 @@ public enum AuxDSPProtocol {
         let token = generation
         let url = try endpoint(profile)
         return try await perform {
-            self.state = nil
-            let replies = try await self.exchange(url, commands: ["\"GetState\"", "\"GetConfigJson\"", "\"GetFaders\""])
+            self.state = nil; self.protocolVersion = nil
+            let replies = try await self.exchange(url, commands: [.getState, .getConfigJson, .getFaders])
             guard self.generation == token else { throw CancellationError() }
             guard replies.count == 3 else { throw SwitcherError.message("Missing Aux refresh response") }
             try DSPReadiness.validateState(DSPReadiness.value(from: replies[0], command: "GetState"))
@@ -169,7 +167,7 @@ public enum AuxDSPProtocol {
             }
             let replies = try await self.exchange(url, commands: [command])
             guard replies.count == 1 else { throw SwitcherError.message("Missing Aux volume acknowledgement") }
-            _ = try AuxDSPProtocol.response(replies[0], command: "SetFaderVolume")
+            _ = try CamillaDSPProtocol.response(replies[0], command: "SetFaderVolume")
         }
     }
     public func setMute(id: Int, muted: Bool) async throws {
@@ -182,21 +180,21 @@ public enum AuxDSPProtocol {
             }
             let replies = try await self.exchange(url, commands: [command])
             guard replies.count == 1 else { throw SwitcherError.message("Missing Aux mute acknowledgement") }
-            _ = try AuxDSPProtocol.response(replies[0], command: "SetFaderMute")
+            _ = try CamillaDSPProtocol.response(replies[0], command: "SetFaderMute")
         }
     }
-    private func exchange(_ url: URL, commands: [String]) async throws -> [Data] {
-        if let transaction { return try await transaction(url, commands) }
-        let connection = BoundedWebSocketConnection(url: url, timeout: timeout)
-        let socket = connection.socket!
+    private func exchange(_ url: URL, commands: [CamillaDSPCommand]) async throws -> [Data] {
+        let token = generation
+        let connection = transaction == nil ? BoundedWebSocketConnection(url: url, timeout: timeout) : nil
+        let socket = connection?.socket
         let gate = DSPReplyGate<[Data]>()
         let cancellation = DSPExchangeCancellation()
         activeConnection = connection; activeSocket = socket
-        socket.resume()
+        socket?.resume()
         var deadline: Task<Void, Never>?
         defer {
             cancellation.cancel(); deadline?.cancel()
-            connection.close()
+            connection?.close()
             if activeSocket === socket { activeSocket = nil; activeConnection = nil; activeCancel = nil }
         }
         return try await withTaskCancellationHandler {
@@ -205,15 +203,29 @@ public enum AuxDSPProtocol {
                 gate.continuation = continuation
                 activeCancel = {
                     gate.finish(.failure(CancellationError()))
-                    cancellation.cancel(); connection.abort()
+                    cancellation.cancel(); connection?.abort()
                 }
                 let worker = Task { @MainActor in
                     do {
+                        let session = try await CamillaDSPProtocolSession.connect { command in
+                            if let transaction = self.transaction {
+                                let replies = try await transaction(url, [command])
+                                guard replies.count == 1 else { throw SwitcherError.message("Missing DSP reply") }
+                                return replies[0]
+                            }
+                            guard let socket else { throw SwitcherError.message("Missing DSP connection") }
+                            return try await CamillaDSPWire.request(command, socket: socket,
+                                invalidResponse: "Unexpected CamillaDSP response")
+                        }
+                        try Task.checkCancellation()
+                        guard self.generation == token else { throw CancellationError() }
+                        try session.requireVersion(self.protocolVersion)
+                        self.protocolVersion = session.version
                         var replies: [Data] = []
                         for command in commands {
                             try Task.checkCancellation()
-                            replies.append(try await CamillaDSPWire.request(command, socket: socket,
-                                invalidResponse: "Unexpected CamillaDSP response"))
+                            guard self.generation == token else { throw CancellationError() }
+                            replies.append(try await session.request(command))
                         }
                         gate.finish(.success(replies))
                     } catch { gate.finish(.failure(error)) }
@@ -224,14 +236,14 @@ public enum AuxDSPProtocol {
                 deadline = DSPConnectionDeadline.schedule(
                     nanoseconds: UInt64(min(timeout, 3600) * 1_000_000_000)) {
                     gate.finish(.failure(URLError(.timedOut)))
-                    cancellation.cancel(); connection.abort()
+                    cancellation.cancel(); connection?.abort()
                 }
             }
         } onCancel: {
             cancellation.cancel()
             Task { @MainActor in
                 gate.finish(.failure(CancellationError()))
-                connection.abort()
+                connection?.abort()
             }
         }
     }

@@ -14,6 +14,8 @@ import Yams
     private var activeCancel: (() -> Void)?
     private var catalogEntries: [PresetEntry] = []
     private var catalogConfigurations: [String: String] = [:]
+    private var operationVersion: CamillaDSPVersion?
+    private var catalogVersion: CamillaDSPVersion?
     public init(timeout: TimeInterval = 20, transaction: Transaction? = nil) {
         self.timeout = timeout.isFinite ? min(20, max(0.05, timeout)) : 20
         self.transaction = transaction
@@ -21,7 +23,7 @@ import Yams
     public func cancel() {
         generation = UUID(); busyToken = nil
         activeCancel?(); activeCancel = nil
-        catalogEntries = []; catalogConfigurations = [:]
+        catalogEntries = []; catalogConfigurations = [:]; operationVersion = nil; catalogVersion = nil
     }
     private func endpoint(_ profile: Profile) throws -> URL {
         try LocalCamillaDSPEndpoint.url(profile.websocketURL,
@@ -37,15 +39,10 @@ import Yams
     private func begin() throws -> (UUID, TimeInterval) {
         guard busyToken == nil else { throw SwitcherError.message("Wait for the current preset command.") }
         let token = generation
-        busyToken = token
+        busyToken = token; operationVersion = nil
         return (token, ProcessInfo.processInfo.systemUptime + timeout)
     }
-    private func finish(_ token: UUID) { if busyToken == token { busyToken = nil } }
-    private func command(_ name: String, _ value: Any? = nil) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: value.map { [name: $0] as Any } ?? name,
-                                             options: [.fragmentsAllowed, .sortedKeys])
-        return String(decoding: data, as: UTF8.self)
-    }
+    private func finish(_ token: UUID) { if busyToken == token { busyToken = nil; operationVersion = nil } }
     private func json(_ value: Any) throws -> String {
         guard JSONSerialization.isValidJSONObject(value) else {
             throw SwitcherError.message("Preset YAML must contain a finite JSON-compatible configuration mapping.")
@@ -59,7 +56,7 @@ import Yams
         return result
     }
     private func string(_ reply: Data, command: String) throws -> String {
-        guard let value = try AuxDSPProtocol.response(reply, command: command)["value"] as? String else {
+        guard let value = try CamillaDSPProtocol.response(reply, command: command)["value"] as? String else {
             throw SwitcherError.message("CamillaDSP did not return a string for \(command).")
         }
         return value
@@ -71,23 +68,24 @@ import Yams
         var title: String?
     }
     private func actual(_ url: URL, profile: Profile, deadline: TimeInterval, token: UUID) async throws -> Actual {
-        let names = ["GetState", "GetConfigJson", "GetConfigFilePath", "GetFaders"]
-        let replies = try await exchange(url, commands: names.map { try command($0) }, deadline: deadline, token: token)
+        let commands: [CamillaDSPCommand] = [.getState, .getConfigJson, .getConfigFilePath, .getFaders]
+        let names = commands.map(\.name)
+        let replies = try await exchange(url, commands: commands, deadline: deadline, token: token)
         try DSPReadiness.validateState(DSPReadiness.value(from: replies[0], command: names[0]))
         let config = try string(replies[1], command: names[1])
         try DSPReadiness.validateConfiguration(config, profile: profile)
         _ = try AuxDSPProtocol.state(configuration: replies[1], faders: replies[3])
-        let pathValue = try AuxDSPProtocol.response(replies[2], command: names[2])["value"]
+        let pathValue = try CamillaDSPProtocol.response(replies[2], command: names[2])["value"]
         guard pathValue is NSNull || pathValue is String else {
             throw SwitcherError.message("CamillaDSP returned an invalid active preset path.")
         }
         return Actual(config: config, path: pathValue as? String, faders: replies[3],
                       title: try object(config)["title"] as? String)
     }
-    private func ask(_ url: URL, name: String, value: Any? = nil,
+    private func ask(_ url: URL, command: CamillaDSPCommand,
                      deadline: TimeInterval, token: UUID) async throws -> Data {
-        let replies = try await exchange(url, commands: [try command(name, value)], deadline: deadline, token: token)
-        _ = try AuxDSPProtocol.response(replies[0], command: name)
+        let replies = try await exchange(url, commands: [command], deadline: deadline, token: token)
+        _ = try CamillaDSPProtocol.response(replies[0], command: command.name)
         return replies[0]
     }
     private func localFile(_ path: String) throws -> URL {
@@ -146,20 +144,19 @@ import Yams
             throw SwitcherError.message("Preset YAML must contain a configuration mapping.")
         }
         _ = try json(local)
-        let fileReply = try await ask(url, name: "ReadConfigFile", value: file.path, deadline: deadline, token: token)
+        let fileReply = try await ask(url, command: .readConfigFile(file.path), deadline: deadline, token: token)
         let daemonYAML = try string(fileReply, command: "ReadConfigFile")
         guard let parsed = try Yams.load(yaml: daemonYAML) as? [String: Any] else {
             throw SwitcherError.message("CamillaDSP returned invalid normalized YAML.")
         }
-        let read = try await ask(url, name: "ReadConfigJson", value: json(parsed), deadline: deadline, token: token)
+        let read = try await ask(url, command: .readConfigJson(try json(parsed)), deadline: deadline, token: token)
         var normalized = try object(string(read, command: "ReadConfigJson"))
         try resolveCoefficients(&normalized, file: file)
-        let validation = try await ask(url, name: "ValidateConfigJson", value: json(normalized), deadline: deadline, token: token)
+        let validation = try await ask(url, command: .validateConfigJson(try json(normalized)), deadline: deadline, token: token)
         let candidate = try string(validation, command: "ValidateConfigJson")
         try DSPReadiness.validateConfiguration(candidate, profile: profile)
         let impact = try PresetCompatibility.classify(activeConfiguration: current.config, candidateConfiguration: candidate)
-        let configReply = try JSONSerialization.data(withJSONObject: ["GetConfigJson": ["result": "Ok", "value": candidate]])
-        let limits = try AuxDSPProtocol.state(configuration: configReply, faders: current.faders)
+        let limits = try AuxDSPProtocol.state(configurationJSON: candidate, faders: current.faders)
         guard let main = limits.main, main.volumeDB <= main.maximumDB,
               limits.faders.allSatisfy({ $0.volumeDB <= $0.maximumDB }) else {
             throw SwitcherError.message("Current Main or Aux volume exceeds this preset's limit. Lower the volume first.")
@@ -187,11 +184,12 @@ import Yams
                     settingChanges: candidate.impact.settingChanges))
             } catch {
                 try check(token, deadline: deadline)
+                if error is CamillaDSPVersionChanged { throw error }
                 entries.append(PresetEntry(path: path, title: title, available: false, reason: error.localizedDescription))
             }
         }
         try check(token, deadline: deadline)
-        catalogEntries = entries; catalogConfigurations = configurations
+        catalogEntries = entries; catalogConfigurations = configurations; catalogVersion = operationVersion
         return PresetDSPState(activePath: activeMatchesFile ? current.path : nil, activeTitle: current.title, entries: entries)
     }
     /// Reclassify the already inspected immutable candidates using confirmed DSP
@@ -215,8 +213,7 @@ import Yams
             var entry = original
             do {
                 let impact = try PresetCompatibility.classify(activeConfiguration: current.config, candidateConfiguration: config)
-                let reply = try JSONSerialization.data(withJSONObject: ["GetConfigJson": ["result": "Ok", "value": config]])
-                let limits = try AuxDSPProtocol.state(configuration: reply, faders: current.faders)
+                let limits = try AuxDSPProtocol.state(configurationJSON: config, faders: current.faders)
                 guard let main = limits.main, main.volumeDB <= main.maximumDB,
                       limits.faders.allSatisfy({ $0.volumeDB <= $0.maximumDB }) else {
                     throw SwitcherError.message("Current Main or Aux volume exceeds this preset's limit. Lower the volume first.")
@@ -231,7 +228,7 @@ import Yams
             updated.append(entry)
         }
         try check(token, deadline: deadline)
-        catalogEntries = updated; catalogConfigurations = configurations
+        catalogEntries = updated; catalogConfigurations = configurations; catalogVersion = operationVersion
         return PresetDSPState(activePath: current.path, activeTitle: current.title, entries: updated)
     }
     public func apply(path: String, profile: Profile) async throws -> PresetDSPState {
@@ -266,7 +263,7 @@ import Yams
             mutationAttempted = true
             // Apply the immutable validated snapshot. Reloading the file here could
             // activate unvalidated devices if another application edited it meanwhile.
-            _ = try await ask(url, name: "SetConfigJson", value: expected, deadline: mutationDeadline, token: token)
+            _ = try await ask(url, command: .setConfigJson(expected), deadline: mutationDeadline, token: token)
             _ = try await retryPointer(url, path: path, deadline: mutationDeadline, token: token)
             let confirmed = try await verify(url, profile: profile, config: expected, path: path,
                                              faders: before.faders, deadline: mutationDeadline, token: token)
@@ -276,10 +273,11 @@ import Yams
             let failure = error
             // Lifecycle cancellation revokes authority. Never write into the new generation.
             if generation != token || Task.isCancelled || error is CancellationError { throw CancellationError() }
+            if error is CamillaDSPVersionChanged { throw error }
             if mutationAttempted {
                 let restored: PresetDSPState
                 do {
-                    _ = try await ask(url, name: "SetConfigJson", value: before.config, deadline: deadline, token: token)
+                    _ = try await ask(url, command: .setConfigJson(before.config), deadline: deadline, token: token)
                     _ = try await retryPointer(url, path: originalPath, deadline: deadline, token: token)
                     let confirmed = try await verify(url, profile: profile, config: before.config, path: originalPath,
                                          faders: before.faders, deadline: deadline, token: token)
@@ -296,7 +294,7 @@ import Yams
         }
     }
     private func faderValues(_ reply: Data) throws -> String {
-        guard let values = try AuxDSPProtocol.response(reply, command: "GetFaders")["value"] else {
+        guard let values = try CamillaDSPProtocol.response(reply, command: "GetFaders")["value"] else {
             throw SwitcherError.message("Missing faders.")
         }
         return try json(values)
@@ -328,7 +326,7 @@ import Yams
         for attempt in 0..<120 {
             try check(token, deadline: deadline)
             do {
-                return try await ask(url, name: "SetConfigFilePath", value: path,
+                return try await ask(url, command: .setConfigFilePath(path),
                     deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 1.5), token: token)
             } catch {
                 try check(token, deadline: deadline)
@@ -343,7 +341,7 @@ import Yams
         let seconds = min(0.1, max(0.001, deadline - ProcessInfo.processInfo.systemUptime))
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
-    private func exchange(_ url: URL, commands: [String], deadline: TimeInterval, token: UUID) async throws -> [Data] {
+    private func exchange(_ url: URL, commands: [CamillaDSPCommand], deadline: TimeInterval, token: UUID) async throws -> [Data] {
         try check(token, deadline: deadline)
         let remaining = deadline - ProcessInfo.processInfo.systemUptime
         let gate = DSPReplyGate<[Data]>()
@@ -366,17 +364,30 @@ import Yams
                 }
                 worker = Task { @MainActor in
                     do {
-                        let replies: [Data]
-                        if let transaction = self.transaction { replies = try await transaction(url, commands) }
-                        else if let socket {
-                            var output: [Data] = []
-                            for command in commands {
-                                try self.check(token, deadline: deadline)
-                                output.append(try await CamillaDSPWire.request(command, socket: socket,
-                                    invalidResponse: "Unexpected CamillaDSP response."))
+                        let session = try await CamillaDSPProtocolSession.connect { command in
+                            try self.check(token, deadline: deadline)
+                            if let transaction = self.transaction {
+                                let replies = try await transaction(url, [command])
+                                guard replies.count == 1 else { throw SwitcherError.message("Missing preset reply") }
+                                return replies[0]
                             }
-                            replies = output
-                        } else { throw SwitcherError.message("Missing preset connection.") }
+                            guard let socket else { throw SwitcherError.message("Missing preset connection") }
+                            return try await CamillaDSPWire.request(command, socket: socket,
+                                invalidResponse: "Unexpected CamillaDSP response")
+                        }
+                        try self.check(token, deadline: deadline)
+                        try session.requireVersion(self.operationVersion)
+                        if self.operationVersion == nil {
+                            if let catalogVersion = self.catalogVersion, catalogVersion != session.version {
+                                self.catalogEntries = []; self.catalogConfigurations = [:]; self.catalogVersion = nil
+                            }
+                            self.operationVersion = session.version
+                        }
+                        var replies: [Data] = []
+                        for command in commands {
+                            try self.check(token, deadline: deadline)
+                            replies.append(try await session.request(command))
+                        }
                         try self.check(token, deadline: deadline)
                         guard replies.count == commands.count else { throw SwitcherError.message("Missing preset command response.") }
                         gate.finish(.success(replies))

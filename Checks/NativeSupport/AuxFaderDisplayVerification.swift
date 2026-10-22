@@ -116,7 +116,64 @@ import AutoAudioPlatform
         state.preferences.linkGroups = [[1, 3]]
         panel.render(state)
         result["missing-volume-member-independent-mute"] = panel.enabledControls[1] == [false, true, false]
+        result.merge(doubleClickResetChecks(), uniquingKeysWith: { _, newest in newest })
         result.merge(mixedMuteRasterChecks(), uniquingKeysWith: { _, newest in newest })
+        return result
+    }
+
+    private static func doubleClickResetChecks() -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for main in [false, true] {
+            for shift in [false, true] {
+                let panel = AuxFaderPanel(frame: .zero, mainOnly: main)
+                let id = main ? 0 : 1
+                var state = AuxFaderSnapshot(profileID: "reset", faders: [
+                    AuxFader(id: 1, name: "L", volumeDB: -12, muted: true, maximumDB: 0),
+                    AuxFader(id: 2, name: "R", volumeDB: -15, muted: false, maximumDB: 0)
+                ], preferences: AuxPreferences(visibleIDs: [1, 2], linkGroups: [[1, 2]]), ready: true,
+                    main: AuxFader(id: 0, name: "Main", volumeDB: -12, muted: true, maximumDB: 0))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+                    styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                let host = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
+                window.contentView = host; host.addSubview(panel)
+                NSLayoutConstraint.activate([panel.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                    panel.trailingAnchor.constraint(equalTo: host.trailingAnchor), panel.topAnchor.constraint(equalTo: host.topAnchor)])
+                var writes: [(Int, Double, AuxVolumeIntent)] = []
+                panel.onVolume = { id, db, _, intent in writes.append((id, db, intent)) }
+                panel.render(state); panel.expand(); host.layoutSubtreeIfNeeded()
+                let modifiers: NSEvent.ModifierFlags = shift ? .shift : []
+                // First click grabs/releases the current knob without moving it.
+                panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, modifiers: modifiers)
+                panel.simulateVolumePointer(id: id, type: .leftMouseUp, db: -12, modifiers: modifiers)
+                panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, modifiers: modifiers, clickCount: 2)
+                panel.simulateVolumePointer(id: id, type: .leftMouseUp, db: -12, modifiers: modifiers, clickCount: 2)
+                let scope: AuxVolumeIntent = shift && !main ? .individual : .group
+                result["Double-click zero reset main \(main) shift \(shift)"] = writes.count == 1 &&
+                    writes.first?.0 == id && writes.first?.1 == 0 && writes.first?.2 == scope &&
+                    panel.displayedVolumes[id] == 0 && (main || panel.displayedVolumes[2] == (shift ? -15 : -3)) &&
+                    panel.displayedMuteStates[id] != 0
+                // Pending commands, offline state and busy refreshes retain existing write gates.
+                panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: 0, clickCount: 2)
+                result["Double-click pending write blocked main \(main) shift \(shift)"] = writes.count == 1
+                panel.commandRejected(); state.ready = false; panel.render(state)
+                panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, clickCount: 2)
+                state.ready = true; state.busy = true; panel.render(state)
+                panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, clickCount: 2)
+                result["Double-click offline and busy blocked main \(main) shift \(shift)"] = writes.count == 1
+                if !main {
+                    state.busy = false
+                    state.faders[1].maximumDB = -12
+                    panel.render(state)
+                    panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, clickCount: 2)
+                    result["Double-click respects linked ceiling shift \(shift)"] = writes.count == 1
+                    panel.simulateVolumePointer(id: id, type: .leftMouseDown, db: -12, modifiers: .shift, clickCount: 2)
+                    result["Shift double-click uses channel ceiling shift \(shift)"] = writes.count == 2 && writes.last?.1 == 0 &&
+                        writes.last?.2 == .individual && panel.displayedVolumes[2] == -15
+                }
+                window.contentView = nil
+            }
+        }
         return result
     }
 
@@ -324,7 +381,48 @@ import AutoAudioPlatform
         result["native-idle-no-polling"] = transport.reads == reads
         controller.onChange = nil
         window.contentView = nil
+        result.merge(await doubleClickLifecycleChecks(), uniquingKeysWith: { _, newest in newest })
         result.merge(await shiftGestureChecks(), uniquingKeysWith: { _, newest in newest })
+        return result
+    }
+
+    private static func doubleClickLifecycleChecks() async -> [String: Bool] {
+        let panel = AuxFaderPanel(frame: .zero)
+        let transport = NativeDragTransport()
+        transport.faders = [AuxFader(id: 1, name: "L", volumeDB: -12, muted: false, maximumDB: 0),
+            AuxFader(id: 2, name: "R", volumeDB: -15, muted: false, maximumDB: 0)]
+        let controller = AuxController(transport: transport,
+            loadPreferences: { _ in AuxPreferences(visibleIDs: [1, 2], linkGroups: [[1, 2]]) }, savePreferences: { _, _ in })
+        let profile = Profile(id: "reset-live", name: "Reset", triggerUID: "t", captureUID: "c", playbackUID: "p",
+            launchAgentLabel: "fixture", launchAgentPath: "/unused", websocketURL: "ws://127.0.0.1:1234",
+            expectedCaptureDevice: "c", expectedPlaybackDevice: "p")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
+        window.contentView = host; host.addSubview(panel)
+        NSLayoutConstraint.activate([panel.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: host.trailingAnchor), panel.topAnchor.constraint(equalTo: host.topAnchor)])
+        controller.onChange = { panel.render($0) }
+        panel.onVolume = { id, db, _, intent in Task { await controller.changeVolume(id: id, db: db, intent: intent) } }
+        panel.onVolumeDragBegin = { id, _, intent in controller.beginVolumeDrag(id: id, intent: intent) }
+        panel.onVolumeDragUpdate = { id, db, _ in controller.updateVolumeDrag(id: id, db: db) }
+        panel.onVolumeDragEnd = { id, db, _ in controller.endVolumeDrag(id: id, db: db) }
+        panel.onVolumeDragCancel = { controller.cancelVolumeDrag() }
+        controller.activate(profile: profile); await controller.refresh()
+        panel.expand(); host.layoutSubtreeIfNeeded()
+        let reads = transport.reads, writes = transport.writes
+        panel.simulateVolumePointer(id: 1, type: .leftMouseDown, db: -12)
+        panel.simulateVolumePointer(id: 1, type: .leftMouseUp, db: -12)
+        for _ in 0..<20 { await Task.yield() }
+        var result = ["First knob click creates no DSP transaction or busy readback":
+            !controller.snapshot.busy && transport.reads == reads && transport.writes == writes]
+        panel.simulateVolumePointer(id: 1, type: .leftMouseDown, db: -12, clickCount: 2)
+        panel.simulateVolumePointer(id: 1, type: .leftMouseUp, db: -12, clickCount: 2)
+        for _ in 0..<200 { await Task.yield() }
+        result["Physical double-click reaches controller and preserves linked offset"] =
+            !controller.snapshot.busy && transport.faders.map(\.volumeDB) == [0, -3] && transport.writes == writes + 2
+        controller.onChange = nil; window.contentView = nil
         return result
     }
 

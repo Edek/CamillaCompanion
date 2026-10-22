@@ -70,7 +70,7 @@ import AutoAudioPlatform
     }
     let mainVolume = try AuxDSPProtocol.volumeCommand(id: 0, db: -20)
     let mainMute = try AuxDSPProtocol.muteCommand(id: 0, muted: true)
-    try expect(mainVolume.contains("SetFaderVolume") && mainMute.contains("SetFaderMute"), "Main uses the same acknowledged fader protocol")
+    try expect(mainVolume.name == "SetFaderVolume" && mainMute.name == "SetFaderMute", "Main uses the same acknowledged fader protocol")
     try expect(state.faders[0].maximumDB == -8, "Shared fader uses the most restrictive Volume limit")
     try expect(state.faders[1].maximumDB == 50 && state.faders[1].muted, "Null limit defaults to +50 and fader mute decodes")
     try expect(state.faders[0].volumeDB == -11, "Fader index 1 corresponds to Aux1")
@@ -87,10 +87,10 @@ import AutoAudioPlatform
         try rejects("Never construct invalid mute command") { _ = try AuxDSPProtocol.muteCommand(id: id, muted: false) }
     }
     try rejects("Reject nonfinite volume") { _ = try AuxDSPProtocol.volumeCommand(id: 1, db: .nan) }
-    let volumeCommand = try AuxDSPProtocol.volumeCommand(id: 1, db: -20)
+    let volumeCommand = try AuxDSPProtocol.volumeCommand(id: 1, db: -20).encoded(for: .v4)
     let volumeObject = try JSONSerialization.jsonObject(with: Data(volumeCommand.utf8)) as? [String: [Double]]
     try expect(volumeObject?["SetFaderVolume"] == [1, -20], "Volume setter uses v4.1.3 tuple format")
-    let muteCommand = try AuxDSPProtocol.muteCommand(id: 2, muted: true)
+    let muteCommand = try AuxDSPProtocol.muteCommand(id: 2, muted: true).encoded(for: .v4)
     let muteObject = try JSONSerialization.jsonObject(with: Data(muteCommand.utf8)) as? [String: [Any]]
     try expect((muteObject?["SetFaderMute"]?[0] as? Int) == 2 && (muteObject?["SetFaderMute"]?[1] as? Bool) == true,
                "Mute setter uses v4.1.3 tuple format")
@@ -100,14 +100,34 @@ import AutoAudioPlatform
     let wrongProfile = Profile(id: "wrong", name: "Wrong", triggerUID: "trigger", captureUID: "capture", playbackUID: "playback",
                                launchAgentLabel: "test", launchAgentPath: "/not-used.plist", websocketURL: "ws://127.0.0.1:1234",
                                expectedCaptureDevice: "Virtual", expectedPlaybackDevice: "Wrong")
-    let wrongEndpoint = CamillaAuxDSPTransport(transaction: { _, _ in
-        [try reply("GetState", "Running"), config, faders]
+    let wrongEndpoint = CamillaAuxDSPTransport(transaction: { _, commands in
+        try commands.map { text in
+            let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+            let name = decoded as? String ?? (decoded as! [String: Any])["command"] as! String
+            switch name {
+            case "GetVersion": return try reply(name, "4.1.3")
+            case "GetState": return try reply(name, "Running")
+            case "GetConfigJson": return config
+            case "GetFaders": return faders
+            default: throw CheckFailure.failed("Unexpected wrong-endpoint command: \(name)")
+            }
+        }
     })
     var wrongRejected = false
     do { _ = try await wrongEndpoint.read(profile: wrongProfile) } catch { wrongRejected = true }
     try expect(wrongRejected, "Aux refresh validates exact profile selectors before exposing controls")
-    let inactive = CamillaAuxDSPTransport(transaction: { _, _ in
-        [try reply("GetState", "Inactive"), config, faders]
+    let inactive = CamillaAuxDSPTransport(transaction: { _, commands in
+        try commands.map { text in
+            let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+            let name = decoded as? String ?? (decoded as! [String: Any])["command"] as! String
+            switch name {
+            case "GetVersion": return try reply(name, "4.1.3")
+            case "GetState": return try reply(name, "Inactive")
+            case "GetConfigJson": return config
+            case "GetFaders": return faders
+            default: throw CheckFailure.failed("Unexpected inactive command: \(name)")
+            }
+        }
     })
     var inactiveRejected = false
     do { _ = try await inactive.read(profile: profile) } catch { inactiveRejected = true }
@@ -120,28 +140,41 @@ import AutoAudioPlatform
         inFlight += 1; peak = max(peak, inFlight)
         defer { inFlight -= 1 }
         await Task.yield()
-        if commands == ["\"GetState\"", "\"GetConfigJson\"", "\"GetFaders\""] {
-            return [try reply("GetState", "Running"), config, faders]
+        return try commands.map { text in
+            let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+            let mapping = decoded as? [String: Any]
+            let command = decoded as? String ?? mapping?["command"] as? String ?? mapping?.keys.first
+            guard let command else { throw CheckFailure.failed("Undecodable Aux protocol command") }
+            switch command {
+            case "GetVersion": return try reply(command, "4.1.3")
+            case "GetState": return try reply(command, "Running")
+            case "GetConfigJson": return config
+            case "GetFaders": return faders
+            case "SetFaderVolume", "SetFaderMute":
+                return try JSONSerialization.data(withJSONObject: [command: ["result": "Ok"]])
+            default: throw CheckFailure.failed("Unexpected Aux protocol command: \(command)")
+            }
         }
-        let command = commands[0].contains("SetFaderVolume") ? "SetFaderVolume" : "SetFaderMute"
-        return [try JSONSerialization.data(withJSONObject: [command: ["result": "Ok"]])]
     })
     _ = try await transport.read(profile: profile)
     let a = Task { try await transport.setVolume(id: 1, db: -20) }
     let b = Task { try await transport.setMute(id: 2, muted: true) }
     let main = Task { try await transport.setVolume(id: 0, db: -20) }
     try await a.value; try await b.value; try await main.value
-    try expect(peak == 1 && requests.count == 4, "Main and Aux setters serialize independent finite transactions")
+    let featureExchanges = requests.flatMap { $0 }.filter { $0 != "\"GetVersion\"" }
+    let handshakes = requests.flatMap { $0 }.filter { $0 == "\"GetVersion\"" }
+    try expect(peak == 1 && featureExchanges.count == 6 && handshakes.count == 4,
+               "Main and Aux setters serialize feature commands and negotiate each finite connection once")
     var invalid = false
     do { try await transport.setVolume(id: 1, db: -7) } catch { invalid = true }
-    try expect(invalid && requests.count == 4, "Configured fader limit rejects before wire mutation")
+    try expect(invalid && requests.flatMap({ $0 }).count == 10, "Configured fader limit rejects before wire mutation")
     transport.cancel()
     var canceled = false
     do { try await transport.setMute(id: 1, muted: true) } catch { canceled = true }
-    try expect(canceled && requests.count == 4, "Cancellation removes previous profile mutation capability")
+    try expect(canceled && requests.flatMap({ $0 }).count == 10, "Cancellation removes previous profile mutation capability")
     var mainCanceled = false
     do { try await transport.setVolume(id: 0, db: -20) } catch { mainCanceled = true }
-    try expect(mainCanceled && requests.count == 4, "Cancellation also removes Main mutation capability")
+    try expect(mainCanceled && requests.flatMap({ $0 }).count == 10, "Cancellation also removes Main mutation capability")
     var started: CheckedContinuation<Void, Never>?
     var release: CheckedContinuation<Void, Never>?
     let suspended = CamillaAuxDSPTransport(transaction: { _, _ in

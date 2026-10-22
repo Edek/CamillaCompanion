@@ -20,6 +20,14 @@ CoreAudio devices:
 Both selections must match the YAML's device names or UIDs. Do not select the same
 device for both roles.
 
+The app supports exactly CamillaDSP **4.1.3** and **5.0.0-beta.2** and detects the
+connected engine version automatically. It does not install or bundle CamillaDSP,
+CamillaGUI, devices or drivers. CamillaDSP 5 requires a compatible YAML; existing
+v4 YAML is not converted automatically. The corresponding official CamillaGUI
+backend v5 beta 2 is available, though its executable reports
+`camillagui 5.0.0-beta.1`. See [Compatibility](compatibility.md) before selecting
+a v5 setup.
+
 ## Open Setup
 
 Follow [Install and open](user-guide.md#install-and-open), placing the app in
@@ -65,10 +73,17 @@ Open the menu bar panel. Confirm DSP is ready before checking playback.
 - Use **Main Volume** and mute for overall output. Configure available Aux faders
   in **Settings > Aux Outputs**. Hold Shift while dragging or muting to adjust
   one Aux without unlinking its group.
+- Linked Aux faders move together, preserving each channel's level offset.
+  Double-click a slider knob to reset to 0 dB; linked Aux offsets are preserved.
+  Hold Shift while double-clicking an Aux slider to reset only that channel.
+  Reset changes volume only, leaves mute states and other settings unchanged, and
+  remains subject to DSP volume limits.
 - Expand **Live Metering**. Realtime follows levels; Peak Hold keeps the highest
   reading. Closing the panel or collapsing metering stops meter reads.
 - Choose presets from the panel; set their folder in **Settings > General**.
   A preset may restart processing and interrupt playback.
+- **More > About & Diagnostics** shows the connected CamillaDSP version after
+  readiness verification, or **Unavailable** until then.
 - Use **Settings > General > Read Levels from DSP** if another client changed
   volume or mute values. Settings save valid changes automatically.
 

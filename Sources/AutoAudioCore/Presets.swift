@@ -9,11 +9,11 @@ public struct PresetImpact: Codable, Equatable, Sendable {
     }
 }
 
-/// Classification uses daemon-normalized configurations. CamillaDSP v4.1.3
+/// Classification uses daemon-normalized configurations. CamillaDSP v4.1.3 and v5 beta 2
 /// restarts processing whenever its devices structure differs, even when an
 /// optional setting only changes from implicit default to an explicit value.
 public enum PresetCompatibility {
-    public static let supportedSettingKeys: Set<String> = ["adjust_period", "enable_rate_adjust", "rate_measure_interval",
+    public static let supportedSettingKeys: Set<String> = ["adjust_period", "adjust_interval_s", "enable_rate_adjust", "rate_measure_interval", "rate_measure_interval_s",
         "chunksize", "queuelimit", "target_level"]
     public static func classify(activeConfiguration: String, candidateConfiguration: String) throws -> PresetImpact {
         func devices(_ source: String) throws -> [String: Any] {
@@ -77,7 +77,7 @@ public enum PresetCompatibility {
             }
             let unit: String
             switch key {
-            case "adjust_period", "rate_measure_interval": unit = " seconds"
+            case "adjust_period", "adjust_interval_s", "rate_measure_interval", "rate_measure_interval_s": unit = " seconds"
             case "chunksize", "target_level": unit = " frames"
             case "queuelimit": unit = " chunks"
             default: unit = ""

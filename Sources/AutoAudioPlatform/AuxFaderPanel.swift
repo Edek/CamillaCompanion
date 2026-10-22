@@ -63,8 +63,8 @@ import AutoAudioCore
     package func preciseField(id: Int) -> NSTextField? { rows[id]?.preciseField }
     package func restorePreciseValue(id: Int) { rows[id]?.restorePreciseValue() }
     package var preciseEntryErrors: [Int: String] { rows.mapValues { $0.entryError } }
-    package func simulateVolumePointer(id: Int, type: NSEvent.EventType, db: Double, modifiers: NSEvent.ModifierFlags = []) {
-        rows[id]?.simulatePointer(type: type, db: db, modifiers: modifiers)
+    package func simulateVolumePointer(id: Int, type: NSEvent.EventType, db: Double, modifiers: NSEvent.ModifierFlags = [], clickCount: Int = 1) {
+        rows[id]?.simulatePointer(type: type, db: db, modifiers: modifiers, clickCount: clickCount)
     }
     package func simulateVolumeKey(id: Int, modifiers: NSEvent.ModifierFlags = []) { rows[id]?.simulateVolumeKey(modifiers: modifiers) }
     package func simulateMuteActivation(id: Int, modifiers: NSEvent.ModifierFlags = []) { rows[id]?.activateMute(modifiers: modifiers) }
@@ -325,6 +325,7 @@ import AutoAudioCore
     var muteAccessibilityValue: String { mute.accessibilityValue() as? String ?? "" }
     private var accessibilityMuteDescription = ""
     private var editingValue = false
+    private var individualResetAllowed = false
     private let entryNote = NSTextField(wrappingLabelWithString: "")
     var entryError: String { entryNote.stringValue }
     var canBeginInteraction: (() -> Bool)? {
@@ -362,9 +363,9 @@ import AutoAudioCore
         slider.installAppearanceCell()
         slider.isContinuous = true
         slider.allowsIndividualIntent = id != 0
-        slider.onBegin = { [weak self] grabbedKnob, intent in
-            guard let self else { return false }
-            if grabbedKnob && (self.displayedDB < self.scale.minimumDB || self.displayedDB > self.scale.maximumDB) {
+        slider.onPrepareKnobDrag = { [weak self] in
+            guard let self else { return }
+            if self.displayedDB < self.scale.minimumDB || self.displayedDB > self.scale.maximumDB {
                 // Include the actual value for this gesture only. A pinned knob
                 // can then move continuously without jumping to the travel edge.
                 self.scale = AuxFaderScale(minimumDB: min(self.gestureMinimum, self.displayedDB),
@@ -372,6 +373,15 @@ import AutoAudioCore
                                           midpointDB: self.id == 0 ? -10 : nil)
                 self.slider.doubleValue = self.scale.position(for: self.displayedDB)
             }
+        }
+        slider.onUnmovedKnobRelease = { [weak self] in
+            guard let self else { return }
+            self.scale = AuxFaderScale(minimumDB: min(self.gestureMinimum, self.gestureMaximum),
+                maximumDB: self.gestureMaximum, midpointDB: self.id == 0 ? -10 : nil)
+            self.slider.doubleValue = self.scale.position(for: self.displayedDB)
+        }
+        slider.onBegin = { [weak self] _, intent in
+            guard let self else { return false }
             return self.onDragBegin?(self.id, self.profileID, intent) == true
         }
         slider.onCommit = { [weak self] in
@@ -379,6 +389,10 @@ import AutoAudioCore
             self.onDragEnd?(self.id, self.scale.decibels(at: self.slider.doubleValue), self.profileID)
         }
         slider.onCancel = { [weak self] in self?.onDragCancel?() }
+        slider.onDoubleClick = { [weak self] intent in
+            guard let self, intent == .individual ? self.individualResetAllowed : self.reset.isEnabled else { return }
+            self.onVolume?(self.id, 0, self.profileID, intent)
+        }
         slider.target = self; slider.action = #selector(sliderChanged)
         addArrangedSubview(slider); slider.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         entryNote.font = .systemFont(ofSize: 11); entryNote.textColor = .systemRed
@@ -413,6 +427,7 @@ import AutoAudioCore
             // scale. Keep the knob on the same clamped value as the number.
             slider.doubleValue = scale.position(for: displayDB)
         }
+        individualResetAllowed = numericEnabled && fader.maximumDB >= 0
         value.isEnabled = numericEnabled
         let sliderEnabled = enabled && rangeValid
         if slider.isEnabled != sliderEnabled { slider.isEnabled = sliderEnabled }
@@ -431,7 +446,7 @@ import AutoAudioCore
         let context = blockedReason.map { "Unavailable: " + $0 + " " } ?? (fader.muted ? "Muted: level changes are saved; unmute to hear them. " : "")
         let outsideRange = displayDB < sliderMinimum ? "Current level is below the slider range. " : (displayDB > sliderMaximum ? "Current level is above the slider range. " : "")
         let emptyRange = !rangeValid ? "Slider travel has no usable interval within the allowed limits. Exact dB entry remains available. " : ""
-        let rangeTip = (trimming ? "Trim only this Aux. " : "") + context + outsideRange + emptyRange + linked + " Slider travel: \(String(format: "%.1f", sliderMinimum)) to \(String(format: "%.1f", sliderMaximum)) dB. " + (group.count > 1 ? "Linked movement clamps at shared bounds. Hold Shift to adjust only this Aux. " : "") + " Allowed movement range: \(String(format: "%.1f", minimum)) to \(String(format: "%.1f", maximum)) dB."
+        let rangeTip = (trimming ? "Trim only this Aux. " : "") + context + outsideRange + emptyRange + linked + " Slider travel: \(String(format: "%.1f", sliderMinimum)) to \(String(format: "%.1f", sliderMaximum)) dB. " + (group.count > 1 ? "Linked movement clamps at shared bounds. Hold Shift to adjust only this Aux. " : "") + "Double-click the knob to reset to 0 dB. Allowed movement range: \(String(format: "%.1f", minimum)) to \(String(format: "%.1f", maximum)) dB."
         if slider.toolTip != rangeTip { slider.toolTip = rangeTip }
         slider.setAccessibilityHelp(rangeTip)
         if accessibilityName != fader.name {
@@ -445,7 +460,7 @@ import AutoAudioCore
         if reset.toolTip != resetTip { reset.toolTip = resetTip }
     }
     func stopTracking() { slider.finishTracking() }
-    func simulatePointer(type: NSEvent.EventType, db: Double, modifiers: NSEvent.ModifierFlags = []) {
+    func simulatePointer(type: NSEvent.EventType, db: Double, modifiers: NSEvent.ModifierFlags = [], clickCount: Int = 1) {
         guard let cell = slider.cell as? NSSliderCell else { return }
         let knob = cell.knobRect(flipped: slider.isFlipped)
         let track = cell.trackRect
@@ -455,7 +470,7 @@ import AutoAudioCore
         let location = slider.convert(point, to: nil)
         guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: modifiers,
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0,
-            context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+            context: nil, eventNumber: 0, clickCount: clickCount, pressure: 1) else { return }
         switch type {
         case .leftMouseDown: slider.mouseDown(with: event)
         case .leftMouseDragged: slider.mouseDragged(with: event)
@@ -572,15 +587,25 @@ import AutoAudioCore
     var onBegin: ((Bool, AuxVolumeIntent) -> Bool)?
     var onCommit: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onDoubleClick: ((AuxVolumeIntent) -> Void)?
+    var onPrepareKnobDrag: (() -> Void)?
+    var onUnmovedKnobRelease: (() -> Void)?
     var canBeginInteraction: (() -> Bool)?
     private var startX: CGFloat = 0
     private var endX: CGFloat = 1
     private var grabOffset: CGFloat = 0
     private var changed = false
+    private var beganDrag = false
     package override func mouseDown(with event: NSEvent) {
         guard isEnabled, canBeginInteraction?() != false,
               let sliderCell = cell as? NSSliderCell else { return }
         window?.makeFirstResponder(self)
+        if event.clickCount == 2 {
+            guard !tracking else { return }
+            let intent: AuxVolumeIntent = allowsIndividualIntent && event.modifierFlags.contains(.shift) ? .individual : .group
+            onDoubleClick?(intent)
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         let knob = sliderCell.knobRect(flipped: isFlipped)
         let bar = sliderCell.barRect(flipped: isFlipped)
@@ -594,24 +619,34 @@ import AutoAudioCore
         let currentKnob = NSRect(x: continuousCenter - knob.width / 2, y: knob.minY,
                                  width: knob.width, height: knob.height)
         let grabbedKnob = currentKnob.contains(point)
-        tracking = true; changed = false
+        tracking = true; changed = false; beganDrag = false
         activationIntent = allowsIndividualIntent && event.modifierFlags.contains(.shift) ? .individual : .group
-        guard canBeginInteraction?() != false, onBegin?(grabbedKnob, activationIntent) == true else { finishTracking(); return }
-        // Preserve the initial continuous gain, including an off-center grab.
+        // A knob click alone is not a DSP drag. Waiting for movement avoids a
+        // cancel/readback between the two clicks of the zero-reset gesture.
         grabOffset = grabbedKnob ? point.x - continuousCenter : 0
-        tracking = true
-        if !grabbedKnob { updatePointer(with: event) }
+        if grabbedKnob { onPrepareKnobDrag?() }
+        else {
+            guard beginDrag(grabbedKnob: false) else { return }
+            updatePointer(with: event)
+        }
+    }
+    private func beginDrag(grabbedKnob: Bool) -> Bool {
+        guard isEnabled, canBeginInteraction?() != false,
+              onBegin?(grabbedKnob, activationIntent) == true else { finishTracking(); return false }
+        beganDrag = true
+        return true
     }
     package override func mouseDragged(with event: NSEvent) {
-        guard tracking else { return }
+        guard tracking, beganDrag || beginDrag(grabbedKnob: true) else { return }
         updatePointer(with: event)
     }
     package override func mouseUp(with event: NSEvent) {
         guard tracking else { return }
+        guard beganDrag else { finishTracking(); onUnmovedKnobRelease?(); return }
         updatePointer(with: event)
         tracking = false
         if changed { onCommit?() } else { onCancel?() }
-        activationIntent = .group
+        finishTracking()
     }
     package override func keyDown(with event: NSEvent) {
         guard !tracking, isEnabled, canBeginInteraction?() != false else { return }
@@ -635,17 +670,19 @@ import AutoAudioCore
         }
         interpretKeyEvents([event])
     }
-    func finishTracking() { tracking = false; activationIntent = .group }
+    func finishTracking() { tracking = false; beganDrag = false; activationIntent = .group }
     package override func cancelOperation(_ sender: Any?) {
         guard tracking else { super.cancelOperation(sender); return }
+        let needsCancel = beganDrag
         finishTracking()
-        onCancel?()
+        if needsCancel { onCancel?() }
     }
     package override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil && tracking {
+            let needsCancel = beganDrag
             finishTracking()
-            onCancel?()
+            if needsCancel { onCancel?() }
         }
     }
     private func updatePointer(with event: NSEvent) {

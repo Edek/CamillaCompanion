@@ -207,6 +207,7 @@ final class InteractiveSession {
     private var latestSnapshot: AudioSnapshot?
     private var auxTargetID: String?
     private var auxTargetReady = false
+    private let dspService: LaunchdDSPManager
     private let engine: Reconciler
     private let configuration: Configuration
     private let options: Options
@@ -248,8 +249,9 @@ final class InteractiveSession {
             uiPreferencesError = "Could not load Settings: " + error.localizedDescription
             log(uiPreferencesError!)
         }
+        dspService = LaunchdDSPManager(log: log)
         engine = Reconciler(profiles: configuration.profiles, audio: CoreAudioManager(),
-                            dsp: LaunchdDSPManager(log: log), store: JSONRouteStore(url: options.stateURL),
+                            dsp: dspService, store: JSONRouteStore(url: options.stateURL),
                             fallbackPreferences: fallbackPreferences,
                             automaticSwitching: uiPreferences.automaticSwitching,
                             companionMode: uiPreferences.companionDSPMode,
@@ -336,9 +338,9 @@ final class InteractiveSession {
                     Application.showSetup(configurationURL: configurationURL, runtimeStateURL: stateURL)
                 })
                 menuBar?.setSettingsDirectory(options.stateURL.deletingLastPathComponent())
-                menuBar?.setDiagnosticsProvider { [weak self] in
+                menuBar?.setDiagnosticsProvider({ [weak self] in
                     self?.diagnosticReport() ?? "Controller unavailable."
-                }
+                }, dspVersion: { [weak self] in self?.detectedDSPVersionText() ?? "Unavailable" })
                 menuBar?.setFallbackHandler { [weak self] profileID, preference in
                     guard let self, !self.shuttingDown,
                           self.controllerStatus().selectedProfileID == profileID else {
@@ -617,6 +619,13 @@ final class InteractiveSession {
         }
     }
 
+    private func detectedDSPVersionText() -> String {
+        guard let version = dspService.detectedVersion(profileID: controllerStatus().selectedProfileID) else {
+            return "Unavailable"
+        }
+        return version.text
+    }
+
     private func diagnosticReport() -> String {
         let status = controllerStatus()
         #if arch(arm64)
@@ -628,7 +637,7 @@ final class InteractiveSession {
         #endif
         var lines = ["\(ApplicationMetadata.name) \(ApplicationMetadata.version) (\(ApplicationMetadata.buildIdentifier))",
                      ApplicationMetadata.copyright, ProcessInfo.processInfo.operatingSystemVersionString,
-                     "Architecture: \(architecture)", "", "DSP: \(status.dspState)",
+                     "Architecture: \(architecture)", "CamillaDSP version: \(detectedDSPVersionText())", "", "DSP: \(status.dspState)",
                      "Policy: \(status.mode); Automatic Switching: \(engine.automaticSwitching)", "Selected profile: \(status.selectedProfileID ?? "automatic")",
                      "Routing bypassed: \(engine.released); restoring: \(engine.routingRestoring); suspended: \(engine.suspended)",
                      "Recovering: \(engine.recovering)", "System Output: \(status.outputName ?? "Unavailable") [\(status.outputUID ?? "none")]",

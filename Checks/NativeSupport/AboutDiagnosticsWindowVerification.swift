@@ -6,6 +6,7 @@ import AutoAudioPlatform
     static func verifyOwnedWindow(renderDirectory: URL? = nil) throws -> Bool {
         _ = NSApplication.shared
         var reads = 0
+        var engineVersion = "5.0.0-beta.2"
         var openedURLs: [URL] = []
         let resourceDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("about-licenses-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: resourceDirectory, withIntermediateDirectories: true)
@@ -15,7 +16,7 @@ import AutoAudioPlatform
         let controller = AboutDiagnosticsWindow(provider: {
             reads += 1
             return ApplicationMetadata.name + " " + ApplicationMetadata.version + "\nSynthetic diagnostic report \(reads)"
-        }, licensesURL: licensesURL, openExternalURL: { openedURLs.append($0) })
+        }, dspVersion: { engineVersion }, licensesURL: licensesURL, openExternalURL: { openedURLs.append($0) })
         guard let root = controller.window?.contentView else { return false }
         func fits(_ view: NSView) -> Bool {
             let children: [NSView]
@@ -48,7 +49,7 @@ import AutoAudioPlatform
             && controller.donateButton.toolTip == "Support CamillaCompanion on Ko-fi."
             && controller.githubButton.toolTip == "Open CamillaCompanion on GitHub."
             && controller.githubButton.accessibilityHelp() == controller.githubButton.toolTip
-            && !labels(root).contains(where: { $0.localizedCaseInsensitiveContains("unavailable") })
+            && controller.dspVersionLabel.stringValue == "CamillaDSP: Unavailable"
         valid = valid && openedURLs.isEmpty && reads == 0
         controller.donateButton.performClick(nil)
         valid = valid && openedURLs.map(\.absoluteString) == ["https://ko-fi.com/camillacompanion"]
@@ -67,6 +68,8 @@ import AutoAudioPlatform
         valid = valid && fits(root) && root.frame.height == collapsedHeight
             && controller.diagnostics.string.contains("Synthetic diagnostic report 1")
             && controller.diagnosticsScroll.isHidden
+            && controller.dspVersionLabel.stringValue == "CamillaDSP: 5.0.0-beta.2"
+        engineVersion = "4.1.3"
         // Native activation exercises the button's state and action dispatch,
         // shared by pointer, keyboard Space, and accessibility activation.
         controller.disclosure.performClick(nil)
@@ -74,8 +77,11 @@ import AutoAudioPlatform
         valid = valid && fits(root) && !controller.diagnosticsScroll.isHidden && expandedHeight > collapsedHeight
             && controller.disclosure.state == .on && controller.disclosure.title == "Hide Logs"
             && controller.disclosure.accessibilityLabel() == "Hide Logs"
+        valid = valid && controller.dspVersionLabel.stringValue == "CamillaDSP: 4.1.3"
+        engineVersion = "Unavailable"
         let expandedText = controller.diagnostics.string
         let copied = controller.diagnosticTextForCopy()
+        valid = valid && controller.dspVersionLabel.stringValue == "CamillaDSP: Unavailable"
         valid = valid && reads == 3 && copied != expandedText && controller.diagnostics.string == copied
         let centered = controller.artwork.convert(controller.artwork.bounds, to: root)
         valid = valid && abs(centered.midX - root.bounds.midX) <= 1 && controller.artwork.image != nil
