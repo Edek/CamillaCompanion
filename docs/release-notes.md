@@ -1,9 +1,8 @@
-# CamillaCompanion 0.1.0-beta.2 local candidate
+# CamillaCompanion 0.1.0-beta.2
 
-This candidate is installed locally and has not been published. The README
-download link still points to the previously published beta 1.
+Released October 25, 2026. [Download the beta and matching source](https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.2).
 
-## Candidate changes
+## Changes
 
 - Use one automatic profile per connection trigger, with confirmation and an
   atomic save when transferring that choice. Different triggers remain independent.

@@ -7,16 +7,16 @@
 <p align="center">A macOS menu bar companion for CamillaDSP.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/local_candidate-0.1.0--beta.2_unpublished-1687ed" alt="Local candidate 0.1.0-beta.2, unpublished">
+  <img src="https://img.shields.io/badge/version-0.1.0--beta.2-1687ed" alt="Version 0.1.0-beta.2">
   <img src="https://img.shields.io/badge/macOS-13%2B-555555" alt="macOS 13 or later">
   <img src="https://img.shields.io/badge/architecture-Apple_Silicon-22b8ad" alt="Apple Silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-80b918" alt="GPL-3.0-only license"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Edek/CamillaCompanion/releases/tag/v0.1.0-beta.1"><strong>Latest published beta</strong></a>
+  <a href="https://github.com/Edek/CamillaCompanion/releases/download/v0.1.0-beta.2/CamillaCompanion-0.1.0-beta.2-arm64.zip"><strong>Download beta 2 for Apple Silicon</strong></a>
   &nbsp;·&nbsp; <a href="docs/first-time-setup.md">Setup guide</a>
-  &nbsp;·&nbsp; <a href="docs/release-notes.md">Candidate notes</a>
+  &nbsp;·&nbsp; <a href="docs/release-notes.md">Release notes</a>
 </p>
 
 Control volume, linked outputs, presets and live meters from the menu bar.
@@ -76,7 +76,7 @@ Follow the [first-time setup tutorial](docs/first-time-setup.md) for a step-by-s
 walkthrough. The [user guide](docs/user-guide.md) covers startup, storage, controls,
 updates and removal.
 
-**Local candidate:** `0.1.0-beta.2`, not published. macOS 13+ on Apple Silicon
+**Latest beta:** `0.1.0-beta.2`. macOS 13+ on Apple Silicon
 (ARM64); Intel is untested and not included. The app is ad-hoc signed without
 Apple notarization. Hardware validation remains limited; see the
 [known limits](docs/release-notes.md#known-limits).
