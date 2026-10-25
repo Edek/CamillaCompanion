@@ -5,17 +5,17 @@ import Foundation
 struct OutputRoutingPolicy {
     enum TeardownReason { case automatic, policyAction, deviceLoss }
 
-    let managedCaptureUIDs: Set<String>
+    let managedFeedUIDs: Set<String>
 
-    func eligibleOutputs(in snapshot: AudioSnapshot, excluding captureUID: String? = nil) -> [AudioDevice] {
-        var excluded = managedCaptureUIDs
-        if let captureUID { excluded.insert(captureUID) }
+    func eligibleOutputs(in snapshot: AudioSnapshot, excluding excludedUID: String? = nil) -> [AudioDevice] {
+        var excluded = managedFeedUIDs
+        if let excludedUID { excluded.insert(excludedUID) }
         return snapshot.devices.filter { $0.hasOutput && !excluded.contains($0.uid) }
     }
 
-    func restorationOutputs(previousUID: String?, excluding captureUID: String? = nil,
+    func restorationOutputs(previousUID: String?, excluding excludedUID: String? = nil,
                             snapshot: AudioSnapshot) -> [AudioDevice] {
-        let physical = eligibleOutputs(in: snapshot, excluding: captureUID)
+        let physical = eligibleOutputs(in: snapshot, excluding: excludedUID)
         var candidates: [AudioDevice] = []
         if let previous = physical.first(where: { $0.uid == previousUID }) { candidates.append(previous) }
         candidates += physical.filter(\.isBuiltIn)

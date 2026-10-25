@@ -188,7 +188,7 @@ import Foundation
                 now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 log: @escaping (String) -> Void = { _ in }) {
         self.profiles = profiles; self.audio = audio; self.dsp = dsp
-        self.routingPolicy = OutputRoutingPolicy(managedCaptureUIDs: Set(profiles.map(\.captureUID)))
+        self.routingPolicy = OutputRoutingPolicy(managedFeedUIDs: Set(profiles.compactMap(\.managedFeedUID)))
         self.store = store; self.sleeper = sleeper ?? TaskSleeper(); self.now = now; self.log = log
         self.fallbackPreferences = fallbackPreferences
         self.automaticSwitching = automaticSwitching
@@ -241,8 +241,8 @@ import Foundation
         guard profiles.contains(where: { $0.id == profileID }) else {
             throw SwitcherError.message("Fallback settings require a configured profile.")
         }
-        if let uid = preference.outputUID, routingPolicy.managedCaptureUIDs.contains(uid) {
-            throw SwitcherError.message("A managed capture device cannot be a fallback output.")
+        if let uid = preference.outputUID, routingPolicy.managedFeedUIDs.contains(uid) {
+            throw SwitcherError.message("A managed system-feed device cannot be a fallback output.")
         }
         if requireManualSelection, preference.mode == .manual,
            preference.outputSelection != .device || preference.outputUID == nil {
@@ -287,12 +287,13 @@ import Foundation
         lastDevices = initial.devices
         rememberObservedOutput(initial)
         if automaticSwitching, record == nil, let orphan = profiles.first(where: {
-            initial.outputUID == $0.captureUID || ($0.routeAlerts && initial.alertUID == $0.captureUID)
-        }) {
-            record = RouteRecord(profileID: orphan.id, captureUID: orphan.captureUID,
+            guard let feedUID = $0.managedFeedUID else { return false }
+            return initial.outputUID == feedUID || ($0.routeAlerts && initial.alertUID == feedUID)
+        }), let feedUID = orphan.managedFeedUID {
+            record = RouteRecord(profileID: orphan.id, captureUID: feedUID,
                                  previousOutputUID: nil, previousAlertUID: nil,
-                                 ownsOutput: initial.outputUID == orphan.captureUID,
-                                 ownsAlerts: orphan.routeAlerts && initial.alertUID == orphan.captureUID)
+                                 ownsOutput: initial.outputUID == feedUID,
+                                 ownsAlerts: orphan.routeAlerts && initial.alertUID == feedUID)
             try store.save(record)
         }
         if let record { managed = profiles.first { $0.id == record.profileID } }
@@ -347,7 +348,7 @@ import Foundation
                let profile = profiles.first(where: { $0.id == loss.profileID }) {
                 let before = AudioSnapshot(devices: lastDevices, outputUID: nil, alertUID: nil)
                 let anotherProfileArrived = mode == .automatic && profiles.contains { candidate in
-                    candidate.id != loss.profileID && (selectedID == nil || selectedID == candidate.id)
+                    candidate.id != loss.profileID && automaticSelectionAllows(candidate, in: snapshot)
                         && (candidate.autoActivate || selectedID == candidate.id)
                         && !available(candidate, in: before, requireTrigger: true)
                         && available(candidate, in: snapshot, requireTrigger: true)
@@ -383,7 +384,8 @@ import Foundation
             }
             onSnapshot?(snapshot)
             let outputChanged = snapshot.outputUID != lastOutputUID
-            if outputChanged, !profiles.contains(where: { $0.captureUID == snapshot.outputUID }) {
+            if outputChanged, let outputUID = snapshot.outputUID,
+               !profiles.contains(where: { $0.managedFeedUID == outputUID }) {
                 reportOutput(snapshot, restored: false)
             }
             defer { rememberObservedOutput(snapshot) }
@@ -436,7 +438,7 @@ import Foundation
             if case .devicesChanged = event, snapshot.devices != lastDevices {
                 let before = AudioSnapshot(devices: lastDevices, outputUID: nil, alertUID: nil)
                 let reconnected = profiles.contains { profile in
-                    (selectedID == nil || selectedID == profile.id) && profile.autoActivate
+                    automaticSelectionAllows(profile, in: snapshot) && profile.autoActivate
                     && !available(profile, in: before, requireTrigger: true)
                     && available(profile, in: snapshot, requireTrigger: true)
                 }
@@ -458,15 +460,18 @@ import Foundation
             }
             if case .outputChanged = event {
                 if outputChanged, !released, mode != .forceOff, record?.ownsOutput != true {
-                    let matches = profiles.filter {
-                        $0.captureUID == snapshot.outputUID && (selectedID == nil || selectedID == $0.id)
-                        && available($0, in: snapshot, requireTrigger: mode != .forceOn)
+                    let matches = profiles.filter { profile in
+                        guard let feedUID = profile.managedFeedUID else { return false }
+                        return feedUID == snapshot.outputUID
+                            && (mode == .automatic ? automaticSelectionAllows(profile, in: snapshot)
+                                : selectedID == nil || selectedID == profile.id)
+                            && available(profile, in: snapshot, requireTrigger: mode != .forceOn)
                     }
-                    if matches.count == 1, let target = matches.first {
+                    if matches.count == 1, let target = matches.first, let feedUID = target.managedFeedUID {
                         // Preserve a safe return route before handling a manually selected virtual output.
-                        let saved = RouteRecord(profileID: target.id, captureUID: target.captureUID,
+                        let saved = RouteRecord(profileID: target.id, captureUID: feedUID,
                             previousOutputUID: lastPhysicalOutputUID, previousAlertUID: nil,
-                            ownsOutput: true, ownsAlerts: target.routeAlerts && snapshot.alertUID == target.captureUID)
+                            ownsOutput: true, ownsAlerts: target.routeAlerts && snapshot.alertUID == feedUID)
                         try store.save(saved)
                         record = saved
                         requestedOutputProfileID = target.id
@@ -575,7 +580,7 @@ import Foundation
         }
         let snapshot = try audio.snapshot()
         guard automaticSwitching ? available(profile, in: snapshot, requireTrigger: mode != .forceOn)
-            : CompanionSessionPolicy.available(profile, in: snapshot) else {
+            : CompanionSessionPolicy.available(profile, in: snapshot, requireTrigger: mode != .forceOn) else {
             throw SwitcherError.message("Required audio devices are unavailable for reconnect.")
         }
         try validateSelectors(profile, in: snapshot)
@@ -669,7 +674,7 @@ import Foundation
     private func current(_ token: Int) -> Bool { workAuthority.current(token) }
     private func rememberObservedOutput(_ snapshot: AudioSnapshot) {
         lastOutputUID = snapshot.outputUID
-        if let uid = snapshot.outputUID, !profiles.contains(where: { $0.captureUID == uid }),
+        if let uid = snapshot.outputUID, !profiles.contains(where: { $0.managedFeedUID == uid }),
            snapshot.devices.contains(where: { $0.uid == uid && $0.hasOutput }) {
             lastPhysicalOutputUID = uid
         }
@@ -691,7 +696,7 @@ import Foundation
         let profile = managed ?? selectedID.flatMap { id in profiles.first { $0.id == id } }
             ?? (profiles.count == 1 ? profiles.first : nil)
         guard let profile, let uid = snapshot.outputUID,
-              !profiles.contains(where: { $0.captureUID == uid }),
+              !profiles.contains(where: { $0.managedFeedUID == uid }),
               let device = snapshot.devices.first(where: { $0.uid == uid && $0.hasOutput }),
               available(profile, in: snapshot, requireTrigger: false),
               available(profile, in: AudioSnapshot(devices: lastDevices, outputUID: nil, alertUID: nil),
@@ -710,39 +715,67 @@ import Foundation
         }
         let before = AudioSnapshot(devices: lastDevices, outputUID: nil, alertUID: nil)
         if profiles.contains(where: { profile in
-            guard selectedID == nil || selectedID == profile.id else { return false }
+            guard mode == .automatic ? automaticSelectionAllows(profile, in: snapshot)
+                : selectedID == nil || selectedID == profile.id else { return false }
             let requireTrigger = mode == .automatic
             return available(profile, in: before, requireTrigger: requireTrigger)
                 != available(profile, in: snapshot, requireTrigger: requireTrigger)
         }) { outputSelectionHardwareTransition = true }
     }
     private func available(_ profile: Profile, in snapshot: AudioSnapshot, requireTrigger: Bool) -> Bool {
-        let outputs = Set(snapshot.devices.filter(\.hasOutput).map(\.uid))
-        return outputs.contains(profile.captureUID) && outputs.contains(profile.playbackUID)
-            && (!requireTrigger || snapshot.devices.contains { $0.uid == profile.triggerUID })
+        profile.deviceRolesAvailable(in: snapshot, automaticSwitching: true, requireTrigger: requireTrigger)
+    }
+    private func managedFeedUID(for profile: Profile) throws -> String {
+        guard let uid = profile.managedFeedUID else {
+            throw SwitcherError.message("\(profile.name) is a Companion Mode profile and has no managed system-output feed. Choose a profile with a managed feed or switch to Companion Mode.")
+        }
+        return uid
     }
 
+    /// Auto selection is a preference while its hardware is available, not a
+    /// permanent lock that prevents an eligible interface from taking over on loss.
+    private func automaticSelectionAllows(_ candidate: Profile, in snapshot: AudioSnapshot) -> Bool {
+        guard let selectedID, selectedID != candidate.id,
+              let selected = profiles.first(where: { $0.id == selectedID }) else { return true }
+        return !available(selected, in: snapshot, requireTrigger: true)
+    }
+    private func recordAutomaticHandoff(to profile: Profile) {
+        guard mode == .automatic, let selectedID, selectedID != profile.id else { return }
+        self.selectedID = profile.id
+        onControlChange?()
+    }
     private func choose(_ snapshot: AudioSnapshot) throws -> Profile? {
         if state == .needsSelection { state = .idle }
         if mode == .forceOff || suspended || released || fault != nil { return nil }
         if let id = requestedOutputProfileID {
             requestedOutputProfileID = nil
             if let target = profiles.first(where: { $0.id == id }),
-               available(target, in: snapshot, requireTrigger: mode != .forceOn) { return target }
+               available(target, in: snapshot, requireTrigger: mode != .forceOn) {
+                recordAutomaticHandoff(to: target)
+                return target
+            }
         }
         if let selectedID {
             guard let chosen = profiles.first(where: { $0.id == selectedID }) else {
                 throw SwitcherError.message("Unknown profile: \(selectedID)")
             }
+            _ = try managedFeedUID(for: chosen)
             if available(chosen, in: snapshot, requireTrigger: mode != .forceOn) { return chosen }
             if mode == .forceOn { throw SwitcherError.message("Required audio devices are unavailable for \(chosen.name).") }
-            return nil
+            // In Auto, unavailable selected hardware can hand off to one
+            // auto-activated alternative. Off, On and Companion do not use this path.
         }
         let candidates = profiles.filter {
             (mode == .forceOn || $0.autoActivate) && available($0, in: snapshot, requireTrigger: mode != .forceOn)
         }
-        if let managed, candidates.contains(managed) { return managed }
-        if candidates.count == 1 { return candidates[0] }
+        if let managed, candidates.contains(managed) {
+            recordAutomaticHandoff(to: managed)
+            return managed
+        }
+        if candidates.count == 1 {
+            recordAutomaticHandoff(to: candidates[0])
+            return candidates[0]
+        }
         if candidates.count > 1 { state = .needsSelection }
         else if mode == .forceOn { throw SwitcherError.message("Select a profile with available capture and playback devices.") }
         return nil
@@ -783,6 +816,11 @@ import Foundation
         let teardownReason = reason
         do {
             let firstSnapshot = try audio.snapshot()
+            if mode != .forceOff, let id = selectedID,
+               let selected = profiles.first(where: { $0.id == id }) {
+                // Missing routing support is a configuration choice, not hardware loss.
+                _ = try managedFeedUID(for: selected)
+            }
             if mode == .forceOn, !(released && routingRestoring),
                let id = selectedID, let selected = profiles.first(where: { $0.id == id }),
                !available(selected, in: firstSnapshot, requireTrigger: false) {
@@ -866,7 +904,8 @@ import Foundation
             reconnectPending = false
             let wasActive = target.map { managed == $0 && state == .active($0.id) } ?? false
             let routeAlreadyOwned = target.map {
-                record?.profileID == $0.id && record?.ownsOutput == true && firstSnapshot.outputUID == $0.captureUID
+                $0.managedFeedUID != nil && record?.profileID == $0.id && record?.ownsOutput == true
+                    && firstSnapshot.outputUID == $0.managedFeedUID
             } ?? false
             if !restarting, wasActive, routeAlreadyOwned {
                 routingRestoring = false; routingError = nil
@@ -893,8 +932,8 @@ import Foundation
             if released { routingRestoring = false; return }
             var routeOnlyReturnOutputUID: String?
             if routeOnlyResume {
-                let virtualUIDs = Set(profiles.map(\.captureUID))
-                if startupSnapshot.outputUID == target.captureUID {
+                let virtualUIDs = Set(profiles.compactMap(\.managedFeedUID))
+                if let feedUID = target.managedFeedUID, startupSnapshot.outputUID == feedUID {
                     let observedOutput = routingPolicy.eligibleOutputs(in: startupSnapshot)
                         .first(where: { $0.uid == lastPhysicalOutputUID })
                     // Enabling switching explicitly acquires a companion's routes.
@@ -947,25 +986,26 @@ import Foundation
                 return
             }
             try validateSelectors(target, in: snapshot)
-            var saved = (adopt ? record : nil) ?? RouteRecord(profileID: target.id, captureUID: target.captureUID,
-                                    previousOutputUID: snapshot.outputUID == target.captureUID
+            let feedUID = try managedFeedUID(for: target)
+            var saved = (adopt ? record : nil) ?? RouteRecord(profileID: target.id, captureUID: feedUID,
+                                    previousOutputUID: snapshot.outputUID == feedUID
                                         ? routeOnlyReturnOutputUID : snapshot.outputUID,
-                                    previousAlertUID: snapshot.alertUID == target.captureUID ? nil : snapshot.alertUID,
+                                    previousAlertUID: snapshot.alertUID == feedUID ? nil : snapshot.alertUID,
                                     ownsOutput: true, ownsAlerts: target.routeAlerts)
             if target.routeAlerts && !saved.ownsAlerts {
-                saved.previousAlertUID = snapshot.alertUID == target.captureUID ? nil : snapshot.alertUID
+                saved.previousAlertUID = snapshot.alertUID == feedUID ? nil : snapshot.alertUID
                 saved.ownsAlerts = true
             }
             routeAcquisitionStarted = true
             try store.save(saved) // Durable recovery information precedes every route acquisition.
             record = saved
-            if snapshot.outputUID != target.captureUID { try setNormalOutput(uid: target.captureUID) }
-            if target.routeAlerts && snapshot.alertUID != target.captureUID {
-                try audio.setAlertOutput(uid: target.captureUID)
+            if snapshot.outputUID != feedUID { try setNormalOutput(uid: feedUID) }
+            if target.routeAlerts && snapshot.alertUID != feedUID {
+                try audio.setAlertOutput(uid: feedUID)
             }
             let confirmed = try audio.snapshot()
-            guard confirmed.outputUID == target.captureUID,
-                  !target.routeAlerts || confirmed.alertUID == target.captureUID else {
+            guard confirmed.outputUID == feedUID,
+                  !target.routeAlerts || confirmed.alertUID == feedUID else {
                 throw SwitcherError.message("Audio route change was not confirmed.")
             }
             rememberObservedOutput(confirmed)
@@ -1049,8 +1089,8 @@ import Foundation
             let snapshot = try audio.snapshot()
             let previous = AudioSnapshot(devices: lastDevices, outputUID: nil, alertUID: nil)
             let profile = profiles.first { $0.id == selectedID }
-            let before = profile.map { CompanionSessionPolicy.available($0, in: previous) } ?? false
-            let after = profile.map { CompanionSessionPolicy.available($0, in: snapshot) } ?? false
+            let before = profile.map { CompanionSessionPolicy.available($0, in: previous, requireTrigger: mode != .forceOn) } ?? false
+            let after = profile.map { CompanionSessionPolicy.available($0, in: snapshot, requireTrigger: mode != .forceOn) } ?? false
             lastDevices = snapshot.devices
             rememberObservedOutput(snapshot)
             onSnapshot?(snapshot)
@@ -1100,7 +1140,7 @@ import Foundation
                 state = .needsSelection
                 return
             }
-            let available = CompanionSessionPolicy.available(profile, in: snapshot)
+            let available = CompanionSessionPolicy.available(profile, in: snapshot, requireTrigger: mode != .forceOn)
             if mode == .forceOff || !available || fault != nil {
                 try await stopCompanionSession()
                 guard current(token) else { return }
@@ -1137,7 +1177,7 @@ import Foundation
                 }
             }
             guard current(token), !automaticSwitching else { return }
-            guard CompanionSessionPolicy.available(profile, in: try audio.snapshot()) else {
+            guard CompanionSessionPolicy.available(profile, in: try audio.snapshot(), requireTrigger: mode != .forceOn) else {
                 try await stopCompanionSession()
                 guard current(token) else { return }
                 state = .idle
@@ -1427,23 +1467,24 @@ import Foundation
             suspended = true
             throw SwitcherError.message("The audio output changed during recovery.")
         }
-        var saved = record ?? RouteRecord(profileID: profile.id, captureUID: profile.captureUID,
-                                previousOutputUID: snapshot.outputUID == profile.captureUID ? nil : snapshot.outputUID,
-                                previousAlertUID: snapshot.alertUID == profile.captureUID ? nil : snapshot.alertUID,
+        let feedUID = try managedFeedUID(for: profile)
+        var saved = record ?? RouteRecord(profileID: profile.id, captureUID: feedUID,
+                                previousOutputUID: snapshot.outputUID == feedUID ? nil : snapshot.outputUID,
+                                previousAlertUID: snapshot.alertUID == feedUID ? nil : snapshot.alertUID,
                                 ownsOutput: true, ownsAlerts: profile.routeAlerts)
         if profile.routeAlerts && !saved.ownsAlerts {
-            saved.previousAlertUID = snapshot.alertUID == profile.captureUID ? nil : snapshot.alertUID
+            saved.previousAlertUID = snapshot.alertUID == feedUID ? nil : snapshot.alertUID
             saved.ownsAlerts = true
         }
         try store.save(saved)
         record = saved
-        if snapshot.outputUID != profile.captureUID { try setNormalOutput(uid: profile.captureUID) }
-        if profile.routeAlerts && snapshot.alertUID != profile.captureUID {
-            try audio.setAlertOutput(uid: profile.captureUID)
+        if snapshot.outputUID != feedUID { try setNormalOutput(uid: feedUID) }
+        if profile.routeAlerts && snapshot.alertUID != feedUID {
+            try audio.setAlertOutput(uid: feedUID)
         }
         let confirmed = try audio.snapshot()
-        guard confirmed.outputUID == profile.captureUID,
-              !profile.routeAlerts || confirmed.alertUID == profile.captureUID else {
+        guard confirmed.outputUID == feedUID,
+              !profile.routeAlerts || confirmed.alertUID == feedUID else {
             throw SwitcherError.message("Audio route change was not confirmed.")
         }
         rememberObservedOutput(confirmed)

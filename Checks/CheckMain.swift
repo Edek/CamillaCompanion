@@ -110,6 +110,16 @@ enum CheckMain {
                 print("Native preset popup interaction passed.")
                 return
             }
+            if ProcessInfo.processInfo.environment["CAMILLACOMPANION_INTERFACES_ONLY"] == "1" {
+                _ = NSApplication.shared
+                try await runDeviceRoleChecks()
+                try await runInterfaceSettingsChecks()
+                try await runInterfaceProfileStoreChecks()
+                try await runPresetPlatformChecks()
+                try await runReconcilerChecks()
+                print("Interfaces, preset and automatic handoff regression checks passed. No live audio or service changes.")
+                return
+            }
             try runDiagnosticsChecks()
             // Run real socket timing before native focus/layout fixtures change
             // process-wide AppKit state. Keep every teardown assertion intact.
@@ -152,6 +162,10 @@ enum CheckMain {
                 try check(passed, "Preset coordination ordering: \(scenario)")
             }
             try runNativeInterfaceChecks()
+            try await runDeviceRoleChecks()
+            try await runInterfaceSettingsChecks()
+            try await runInterfaceProfileStoreChecks()
+            try runScrollablePresetChecks()
             try await runAuxFaderChecks()
             try runAuxFaderScaleChecks()
             try await runAuxFaderDisplayChecks()

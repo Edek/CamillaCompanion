@@ -1,9 +1,25 @@
 # CamillaCompanion 0.1.0-beta.2 local candidate
 
-This is a local candidate for review. It has not been published or deployed as a
-release. The README download link still points to the previous published beta.
+This candidate is installed locally and has not been published. The README
+download link still points to the previously published beta 1.
 
 ## Candidate changes
+
+- Use one automatic profile per connection trigger, with confirmation and an
+  atomic save when transferring that choice. Different triggers remain independent.
+- Keep a healthy running interface when another connects. In Automatic Switching
+  with DSP Auto, allow a unique eligible alternative to take over when selected
+  hardware disappears; multiple alternatives still require selection.
+- Clarify Startup Preset labels, add duplication and preset-folder access, and
+  group the profile editor consistently with Settings.
+- Keep larger preset libraries in an eight-row scrolling selector.
+- Replace the Interfaces form with a saved-profile table, + editor, and shared
+  device browser showing input/output channels and offline references. Prefill the
+  DSP executable from saved profiles and suggest mappings from the chosen YAML.
+- Separate DSP input from the managed system-audio feed. Companion-only profiles
+  support input-only sources and same-device duplex mapping. Profile saves use
+  configuration version 2; existing version 1 files remain readable.
+  Saving leaves audio unchanged; Use Profile loads saved changes.
 
 - Detect and support exactly CamillaDSP **4.1.3** and **5.0.0-beta.2**. Other
   engine versions are rejected before control writes.
@@ -27,8 +43,10 @@ The official CamillaGUI backend v5 beta 2 is available; its executable reports
   notarization.
 - Existing beta hardware validation remains limited to the previously tested
   one-interface setup. This candidate does not claim new live hardware acceptance.
-- Existing setups can be inspected, but profile editing and multi-interface
-  activation presets are not included. Interface profiles remain a future plan.
+- Interface profiles and their startup presets are implemented and installed
+  locally. Physical multi-interface handoff has not been accepted yet. A basic
+  preset-creation wizard, per-profile preset folders and GUI editing for additional
+  profiles remain future work.
 - A keyboard shortcut to open the panel remains a possible future idea, with no
   commitment or release date.
 - Arbitrary external DSP attachment is not included. The app manages a configured

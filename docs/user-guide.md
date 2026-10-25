@@ -59,9 +59,92 @@ preserved. An independently running DSP may conflict with activation; this beta
 does not provide arbitrary external-server attachment.
 
 An existing controller configuration opens for inspection without replacement.
-Setup is not yet an editor or repair tool for existing profiles. Invalid existing
-JSON is preserved and must be corrected separately. Multiple-interface activation
-presets are future work. Use **Settings > General > Setup…** to inspect it.
+Setup handles first-run configuration. Use **Settings > Interfaces** to edit profiles. Invalid existing
+JSON is preserved and must be corrected separately. Use **Settings > General >
+Setup…** to inspect the initial setup, and Interfaces for additional profiles.
+
+## Interface profiles
+
+**Settings > Interfaces** lists saved profiles with their connection trigger,
+DSP input/output and status. Use **+** to add a profile or **Edit…** to change one.
+The editor groups Profile, Audio Devices, Startup Preset and Behavior using the
+same typography as Settings. **Startup Preset** is the CamillaDSP YAML file used
+when the interface starts. **Choose Preset…** reads an existing file and suggests
+matching devices without rewriting it. **Show in Finder** reveals the file.
+**Open Presets Folder** opens the folder configured in General. Choose Preset
+starts there too. If that folder is unavailable, both use the selected preset's
+folder when it exists.
+
+**Duplicate Preset…** saves an unchanged copy beside the original and selects it
+in the unsaved form. Keeping it in the same folder preserves relative coefficient
+references. It never replaces another file or starts processing. The copied file
+remains if you cancel the profile editor. Basic-preset creation is planned later.
+
+**Advanced** contains the DSP executable, WebSocket port and system-alert option.
+The executable is prefilled from a valid saved profile. **Find…** searches known
+installation locations if needed. Collapsed sections leave no reserved space;
+the sheet scrolls if its content exceeds the available screen height.
+
+The panel's preset selector changes the running configuration. It does not rewrite
+this profile's startup job. New profiles start from their explicitly selected
+preset; imported jobs using only a CamillaDSP state file follow that file's saved
+preset reference.
+
+Each device field opens a table of devices and their input/output channel counts.
+Incompatible devices remain visible with a reason. Offline references retain their
+UIDs. **Refresh** reads the current list once. The connection trigger defaults to
+DSP output but can be selected independently.
+
+Alternative profiles may share DSP input/output devices. The editor explains
+this overlap. Each connection trigger can have only one automatic profile.
+Enabling Auto-activate for another profile on that trigger opens a confirmation
+naming the affected profiles. **Make Automatic** records the change in the draft;
+Cancel keeps the previous choice. **Save Profile** enables it here and disables it
+on the other profiles for that trigger in one save. Other triggers, presets and
+device assignments are kept. Canceling the editor discards the draft transfer.
+Existing duplicate automatic choices are not silently repaired on launch; saving
+an automatic profile asks which one should replace the others.
+
+In Automatic Switching with DSP Auto, an eligible selected or active profile keeps
+playing when another interface connects. If its required hardware disappears, the
+app can hand off to the sole eligible automatic alternative, even after an explicit
+selection of the old profile. The replacement becomes the current selection, so
+reconnecting the old interface does not steal playback back. If several alternatives
+are eligible, select one. Manual alternatives are not started automatically. Off,
+forced DSP On and Companion Mode retain their existing policy; Companion follows
+only its selected profile. There is no numeric or connection-order priority.
+
+Profile transitions stop the previously managed DSP before starting the next.
+Existing identity, device-mapping and endpoint ownership checks still apply.
+
+**Support automatic routing** assigns the DSP input as the system-audio feed.
+Use a loopback feed such as BlackHole, with both input and output channels,
+separate from DSP output and trigger. Input/output capability alone does not establish
+a loopback audio path. Leave it off for input-only or same-interface duplex setups in Companion
+Mode. A Companion-only profile cannot be used with Automatic Switching enabled.
+
+**Save Profile** validates and saves the complete profile without changing audio.
+**Use Profile** loads saved changes and selects that profile. It requires its
+devices to be connected and can interrupt playback; DSP Off stays Off. Browsing
+profiles does not activate them. Remove deletes the saved reference, leaving YAML,
+preferences and old job files intact; the current or final profile cannot be removed.
+Saved edits show **Pending use** until loaded with Use Profile or the next app
+launch. An active profile remains marked Active while its saved changes are pending.
+
+The first profile save upgrades `config.json` to version 2. Existing version 1 files
+remain readable and are not changed by browsing. Older builds reject version 2;
+restore a matching configuration backup before downgrading.
+
+In Automatic Switching, choose DSP **Auto** to clear an explicit profile choice
+and follow eligible connected interfaces. If more than one is eligible and none
+is active, select one. Companion Mode keeps system routing under your control.
+Main/Aux preferences remain associated with the same profile ID. The presets
+folder is still global; each profile uses its configured startup preset when its
+DSP job starts. Separate preset folders per profile remain future work.
+
+New profiles currently configure DSP only. Existing GUI configuration is preserved
+when editing a profile; GUI setup for additional profiles remains manual. A changed
+DSP port must also match the GUI backend's configuration when GUI is used.
 
 ## Open and close
 
@@ -129,6 +212,9 @@ Expand Live Metering to read levels while the panel is visible. Collapse it or
 close the panel to stop reads. Realtime follows levels; Peak Hold retains the
 highest reading. The mode is shared with **Settings > Main Output**. Meter and
 slider display ranges do not change DSP gain limits.
+
+The preset selector shows up to eight entries before scrolling; every preset
+remains accessible, including those with duplicate display titles.
 
 Select a presets folder in General. Presets use direct DSP control and do not
 require CamillaGUI. A timing/buffering warning marks presets that need extra

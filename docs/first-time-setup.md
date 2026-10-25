@@ -90,6 +90,14 @@ Open the menu bar panel. Confirm DSP is ready before checking playback.
 Opening the app again reveals the same panel. Closing the panel keeps DSP
 running; use **More > Quit** to stop the controller and its managed DSP.
 
+For another interface, use **Settings > Interfaces > +**. Choose its devices and
+**Startup Preset**, then Save Profile and Use Profile. Only one profile per
+connection trigger can auto-activate; replacing that choice requires confirmation.
+With Automatic Switching and DSP Auto, a newly connected interface does not take
+over playback. If the current interface disappears, one eligible automatic
+alternative can take over; several require selection. Companion Mode stays with
+its selected profile. See [interface profiles](user-guide.md#interface-profiles).
+
 ## Startup and saved settings
 
 **Settings > General > Start at Login** is initially Off for a new setup. Enable

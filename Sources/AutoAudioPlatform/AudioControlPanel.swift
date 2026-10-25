@@ -155,6 +155,10 @@ import AutoAudioCore
         header.addArrangedSubview(pinButton)
         profilePicker.menu?.delegate = self
         presetPicker.menu?.delegate = self
+        presetPicker.onListTrackingChanged = { [weak self] tracking in
+            guard let self, let menu = self.presetPicker.menu else { return }
+            if tracking { self.menuWillOpen(menu) } else { self.menuDidClose(menu) }
+        }
         fallbackPicker.menu?.delegate = self
         addFullWidth(header)
         profilePicker.target = self; profilePicker.action = #selector(profileChanged)
@@ -391,13 +395,13 @@ import AutoAudioCore
             presetChoices = next
             presetPicker.removeAllItems()
             if needsPlaceholder {
-                presetPicker.addItem(withTitle: placeholderTitle)
+                presetPicker.menu?.addItem(NSMenuItem(title: placeholderTitle, action: nil, keyEquivalent: ""))
                 // Informational selection has no command identity. Keep its
                 // native title readable and allow the popup to open normally.
                 presetPicker.lastItem?.isEnabled = enabled && !next.isEmpty
             }
             for choice in next {
-                presetPicker.addItem(withTitle: choice.title)
+                presetPicker.menu?.addItem(NSMenuItem(title: choice.title, action: nil, keyEquivalent: ""))
                 presetPicker.lastItem?.representedObject = choice.id
             }
         }

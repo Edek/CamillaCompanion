@@ -226,6 +226,7 @@ private func fallbackProfile() -> Profile {
         audio.value.alertUID = "built-b"
         var other = fallbackProfile()
         other.id = "other"; other.captureUID = "other-capture"
+        other.managedFeedUID = "other-capture"
         let engine = Reconciler(profiles: [fallbackProfile(), other], audio: audio, dsp: dsp,
                                 store: store, sleeper: FallbackSleeper())
         engine.setMode(.automatic, profileID: "home")
@@ -340,6 +341,7 @@ private func fallbackProfile() -> Profile {
         other.id = "other"; other.name = "Other"
         other.triggerUID = "other-interface"; other.playbackUID = "other-interface"
         other.captureUID = "other-capture"
+        other.managedFeedUID = "other-capture"
         other.expectedCaptureDevice = "other-capture"; other.expectedPlaybackDevice = "other-interface"
         let engine = Reconciler(profiles: [fallbackProfile(), other], audio: audio, dsp: dsp,
             store: FallbackRouteStore(), sleeper: FallbackSleeper(),

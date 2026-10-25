@@ -77,6 +77,15 @@ public enum MenuBarCommandRequest {
     private var aboutAfterMenu = false
     private var settingsAfterMenu = false
     package var settingsWindow: NativeSettingsWindow?
+    private var interfaceProfilesHandlers: InterfaceProfilesHandlers?
+
+    public func updateInterfaceDevices(snapshot: AudioSnapshot?) {
+        settingsWindow?.updateInterfaceDevices(snapshot?.devices ?? [])
+    }
+
+    public func setInterfaceProfilesHandlers(_ handlers: InterfaceProfilesHandlers) {
+        interfaceProfilesHandlers = handlers
+    }
     private var loginItemManager: LoginItemManager?
     private var setupHandler: (() -> Void)?
     private var settingsDirectoryURL: URL?
@@ -249,6 +258,9 @@ public enum MenuBarCommandRequest {
         }
         self.presentation = presentation
         settingsWindow?.updateProfile(id: presentation.selectedProfileID, name: presentation.selectedProfile?.name)
+        let verifiedActiveID: String?
+        if case .active(let id) = presentation.state { verifiedActiveID = id } else { verifiedActiveID = nil }
+        settingsWindow?.updateInterfaceRuntime(activeID: verifiedActiveID, selectedID: presentation.selectedProfileID)
         settingsWindow?.updateAuxSnapshot(auxSnapshot)
         updateMainSliderRange()
         if iconDimmed != presentation.statusIconDimmed {
@@ -886,7 +898,8 @@ public enum MenuBarCommandRequest {
                     throw SwitcherError.message("Aux settings are unavailable for this profile. Select it again to edit its settings.")
                 }
                 try await operation(preferences)
-            }, onRefreshFaders: { [weak self] in self?.requestAuxRefresh() }) { [weak self] next in
+            }, onRefreshFaders: { [weak self] in self?.requestAuxRefresh() },
+            interfaceProfiles: interfaceProfilesHandlers) { [weak self] next in
             guard let self, let save = self.saveUIPreferences else { throw SwitcherError.message("Settings are unavailable.") }
             try save(next)
             if self.uiPreferences.presetsFolderPath != next.presetsFolderPath {

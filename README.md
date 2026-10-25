@@ -28,7 +28,10 @@ macOS audio routing when your interface connects and disconnects.
 - Main volume and mute, plus named Aux faders with linked groups.
 - Shift-drag or Shift-mute to adjust one Aux without unlinking its group.
 - Input/output meters with synchronized Realtime and Peak Hold modes.
-- Preset selection and optional CamillaGUI controls.
+- Preset selection with an eight-row scrolling list for larger libraries.
+- Interface profiles with validated startup presets, device mapping and one
+  automatic profile per connection trigger.
+- Optional CamillaGUI controls.
 - DSP-only Companion Mode, or Automatic Switching with Processed/Bypassed routing.
 - Configurable fallback output, Start at Login and a pinnable panel.
 - Optional menu bar icon and direct access to the settings folder.
@@ -92,6 +95,17 @@ when leaving with your MacBook: the managed route returns to the previous
 available output, or an available fallback such as **MacBook Pro Speakers**.
 Reconnect at your desk to resume processing.
 
+**More than one interface.** Add profiles in **Settings > Interfaces** and choose
+their devices and startup presets. Each connection trigger can have one automatic
+profile. Enabling another for the same trigger asks before replacing that choice;
+other profiles remain available manually. Save Profile persists the change, and
+Use Profile loads saved changes.
+
+Connecting a second interface keeps the current one playing. In Automatic
+Switching with DSP Auto, losing the current interface hands off to one eligible
+automatic alternative. Several eligible alternatives require a choice. Companion
+Mode follows only its selected profile. See the [profile guide](docs/user-guide.md#interface-profiles).
+
 Prefer a specific output? Set Fallback to **Force** and select it under
 **Fallback/Bypass Output**. Force enforces that device on both disconnection and
 reconnection.
@@ -118,13 +132,14 @@ scope.
 ## Future roadmap
 
 - Improve installation, updates and removal, and broaden macOS and hardware testing.
-- Consider interface profiles that associate each audio interface with its DSP
-  configuration and an optional preset.
+- Add a basic-preset creation wizard and separate preset libraries per interface.
+- Validate multi-interface handoff on additional hardware.
 - Consider a keyboard shortcut to show the panel; no shortcut is committed.
 - Consider translations if there is demand.
 
-These are future plans without committed dates or guarantees. Multi-interface setup
-is not included in this candidate.
+These are future plans without committed dates or guarantees. The current source
+includes an Interfaces profile table and device browser; multi-interface hardware
+acceptance remains pending.
 
 ## Development and release status
 

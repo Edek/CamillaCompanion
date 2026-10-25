@@ -19,7 +19,9 @@ public enum ConfigurationLoader {
     }
 
     public static func validate(_ configuration: Configuration) throws {
-        guard configuration.version == 1 else { throw invalid("Unsupported configuration version: \(configuration.version)") }
+        guard configuration.version == 1 || configuration.version == 2 else {
+            throw invalid("Unsupported configuration version: \(configuration.version)")
+        }
         guard !configuration.profiles.isEmpty else { throw invalid("Add at least one profile.") }
         if let feedback = configuration.feedback {
             guard feedback.durationSeconds.isFinite, (0.5...10).contains(feedback.durationSeconds) else {
@@ -41,6 +43,9 @@ public enum ConfigurationLoader {
                 throw invalid("Profile fields must not be empty (profile: \(profile.id)).")
             }
             guard ids.insert(profile.id).inserted else { throw invalid("Duplicate profile ID: \(profile.id)") }
+            if configuration.version == 1, profile.managedFeedUID == nil {
+                throw invalid("Companion-only device roles require configuration version 2. Restore the saved version 1 configuration before using an older app.")
+            }
             guard labels.insert(profile.launchAgentLabel).inserted else {
                 throw invalid("Each profile must have its own LaunchAgent label: \(profile.launchAgentLabel)")
             }
@@ -58,8 +63,13 @@ public enum ConfigurationLoader {
                     throw invalid("Profiles must have distinct GUI endpoints and service identities.")
                 }
             }
-            guard profile.captureUID != profile.playbackUID, profile.captureUID != profile.triggerUID else {
-                throw invalid("Profile \(profile.id) must use a different virtual device and physical interface.")
+            if let feedUID = profile.managedFeedUID {
+                guard feedUID == profile.captureUID else {
+                    throw invalid("Profile \(profile.id) managed feed must match its CamillaDSP capture device.")
+                }
+                guard feedUID != profile.playbackUID, feedUID != profile.triggerUID else {
+                    throw invalid("Profile \(profile.id) managed feed must differ from its DSP output and connection trigger.")
+                }
             }
             let labelCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
             guard profile.launchAgentLabel.unicodeScalars.allSatisfy({ labelCharacters.contains($0) }) else {

@@ -38,18 +38,19 @@ import AutoAudioCore
     var holdStart = false
     var continuation: CheckedContinuation<Void, Never>?
     var calls: [String] = []
+    var profileCalls: [String] = []
     func start(_ profile: Profile) async throws {
-        calls.append("start")
+        calls.append("start"); profileCalls.append("start:" + profile.id)
         if holdStart { await withCheckedContinuation { continuation = $0 } }
         if failStart { throw SwitcherError.message("start failed") }
     }
     func verifyReadiness(_ profile: Profile) async throws {
-        calls.append("verify")
+        calls.append("verify"); profileCalls.append("verify:" + profile.id)
         try onVerify?()
         if failReadiness { throw SwitcherError.message("not ready") }
     }
     func stop(_ profile: Profile) async throws {
-        calls.append("stop")
+        calls.append("stop"); profileCalls.append("stop:" + profile.id)
         if failStop { throw SwitcherError.message("stop failed") }
     }
 }
@@ -77,6 +78,94 @@ import AutoAudioCore
         Reconciler(profiles: [profile(alerts: alerts)], audio: audio, dsp: dsp, store: store, sleeper: InstantSleeper())
     }
     private func drain() async { for _ in 0..<100 { await Task.yield() } }
+
+    private func alternative(_ id: String = "other", auto: Bool = true) -> Profile {
+        var result = profile(); result.id = id; result.name = id
+        result.triggerUID = id + "-interface"; result.playbackUID = result.triggerUID
+        result.captureUID = id + "-capture"; result.managedFeedUID = result.captureUID
+        result.expectedCaptureDevice = result.captureUID; result.expectedPlaybackDevice = result.playbackUID
+        result.launchAgentLabel = "test." + id; result.autoActivate = auto
+        return result
+    }
+    private func addDevices(_ profile: Profile, to audio: TestAudio, trigger: Bool = true) {
+        audio.value.devices.append(AudioDevice(uid: profile.captureUID, name: profile.captureUID, hasOutput: true))
+        if trigger { audio.value.devices.append(AudioDevice(uid: profile.playbackUID, name: profile.playbackUID, hasOutput: true)) }
+    }
+
+    func testAutomaticSelectedInterfaceHandsOffWithoutArrivalTakeover() async throws {
+        let audio = TestAudio(), dsp = TestDSP(), store = TestStore(), other = alternative()
+        addDevices(other, to: audio, trigger: false)
+        let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store, sleeper: InstantSleeper())
+        engine.setMode(.automatic, profileID: "home")
+        try engine.start(); await drain()
+        let originalCalls = dsp.profileCalls
+        audio.value.devices.append(AudioDevice(uid: other.playbackUID, name: "Other", hasOutput: true))
+        engine.handle(.devicesChanged); await drain()
+        try check(engine.state == .active("home") && dsp.profileCalls == originalCalls,
+                  "Connecting another automatic interface never steals a healthy selected session")
+        let originalDevice = audio.value.devices.first { $0.uid == "interface" }!
+        audio.value.devices.removeAll { $0.uid == "interface" }
+        engine.handle(.devicesChanged); await drain()
+        try check(engine.state == .active(other.id) && engine.selectedID == other.id
+                  && audio.value.outputUID == other.captureUID,
+                  "Auto hands off from unavailable explicitly selected hardware to its unique eligible alternative")
+        try check(dsp.profileCalls == ["start:home", "verify:home", "stop:home", "start:other", "verify:other"],
+                  "Handoff stops the old DSP before starting and verifying the new profile")
+        let handedOffCalls = dsp.profileCalls
+        audio.value.devices.append(originalDevice); engine.handle(.devicesChanged); await drain()
+        try check(engine.state == .active(other.id) && dsp.profileCalls == handedOffCalls,
+                  "The original interface returning cannot reclaim a healthy handed-off session")
+        await engine.shutdown()
+    }
+
+    func testAutomaticLateAlternativeAfterSelectedDeviceLoss() async throws {
+        let audio = TestAudio(), dsp = TestDSP(), store = TestStore(), other = alternative()
+        addDevices(other, to: audio, trigger: false)
+        let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store, sleeper: InstantSleeper())
+        engine.setMode(.automatic, profileID: "home"); try engine.start(); await drain()
+        audio.value.devices.removeAll { $0.uid == "interface" }
+        engine.handle(.devicesChanged); await drain()
+        try check(engine.state == .idle && engine.mode == .automatic, "Auto waits without a usable replacement")
+        audio.value.devices.append(AudioDevice(uid: other.playbackUID, name: "Other", hasOutput: true))
+        engine.handle(.devicesChanged); await drain()
+        try check(engine.state == .active(other.id) && engine.selectedID == other.id,
+                  "A consumed selected-device loss does not block a later automatic alternative")
+        await engine.shutdown()
+    }
+
+    func testAutomaticHandoffRequiresOneEnabledAlternative() async throws {
+        for manualAlternative in [false, true] {
+            let audio = TestAudio(), dsp = TestDSP(), store = TestStore()
+            let other = alternative(auto: !manualAlternative), third = alternative("third")
+            addDevices(other, to: audio)
+            if !manualAlternative { addDevices(third, to: audio) }
+            let profiles = manualAlternative ? [profile(), other] : [profile(), other, third]
+            let engine = Reconciler(profiles: profiles, audio: audio, dsp: dsp, store: store, sleeper: InstantSleeper())
+            engine.setMode(.automatic, profileID: "home"); try engine.start(); await drain()
+            audio.value.devices.removeAll { $0.uid == "interface" }
+            engine.handle(.devicesChanged); await drain()
+            try check(engine.state == (manualAlternative ? .idle : .needsSelection)
+                      && dsp.profileCalls == ["start:home", "verify:home", "stop:home"],
+                      "Handoff skips manual alternatives and requires selection when several automatic alternatives remain")
+            await engine.shutdown()
+        }
+    }
+
+    func testAutomaticHandoffDoesNotOverrideOffOnOrCompanion() async throws {
+        for policy in ["off", "on", "companion"] {
+            let audio = TestAudio(), dsp = TestDSP(), store = TestStore(), other = alternative()
+            addDevices(other, to: audio)
+            let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store,
+                sleeper: InstantSleeper(), automaticSwitching: policy != "companion", companionProfileID: "home")
+            if policy != "companion" { engine.setMode(policy == "off" ? .forceOff : .forceOn, profileID: "home") }
+            try engine.start(); await drain()
+            audio.value.devices.removeAll { $0.uid == "interface" }
+            engine.handle(.devicesChanged); await drain()
+            try check(!dsp.profileCalls.contains("start:other") && engine.selectedID == "home",
+                      "Automatic handoff cannot override Off, forced On loss or Companion selection")
+            await engine.shutdown()
+        }
+    }
 
     func testReleaseRestoresRouteAndResumesWithoutDSPLifecycleCalls() async throws {
         let audio = TestAudio(), dsp = TestDSP(), store = TestStore()
@@ -982,6 +1071,7 @@ import AutoAudioCore
                 audio.value.devices.append(AudioDevice(uid: "other-capture", name: "Other capture", hasOutput: true))
                 var other = profile(); other.id = "other"; other.triggerUID = "other-interface"
                 other.playbackUID = "other-interface"; other.captureUID = "other-capture"
+                other.managedFeedUID = "other-capture"
                 other.expectedCaptureDevice = "other-capture"; other.expectedPlaybackDevice = "other-interface"
                 let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store,
                     sleeper: InstantSleeper(), fallbackPreferences: .init(profiles:
@@ -1045,6 +1135,7 @@ import AutoAudioCore
                                     AudioDevice(uid: "other-capture", name: "Other capture", hasOutput: true)]
             var other = profile(); other.id = "other"; other.triggerUID = "other-interface"
             other.playbackUID = "other-interface"; other.captureUID = "other-capture"
+            other.managedFeedUID = "other-capture"
             other.expectedCaptureDevice = "other-capture"; other.expectedPlaybackDevice = "other-interface"
             other.autoActivate = false
             let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store,
@@ -1072,6 +1163,7 @@ import AutoAudioCore
                                 AudioDevice(uid: "other-capture", name: "Other capture", hasOutput: true)]
         var other = profile(); other.id = "other"; other.triggerUID = "other-interface"
         other.playbackUID = "other-interface"; other.captureUID = "other-capture"
+        other.managedFeedUID = "other-capture"
         other.expectedCaptureDevice = "other-capture"; other.expectedPlaybackDevice = "other-interface"
         let engine = Reconciler(profiles: [profile(), other], audio: audio, dsp: dsp, store: store,
             sleeper: InstantSleeper(), fallbackPreferences: .init(profiles:
@@ -1121,6 +1213,10 @@ private func assertNil(_ value: Any?, file: StaticString = #file, line: UInt = #
 }
 @MainActor func runReconcilerChecks() async throws {
     let scenarios = ReconcilerChecks()
+    try await scenarios.testAutomaticSelectedInterfaceHandsOffWithoutArrivalTakeover()
+    try await scenarios.testAutomaticLateAlternativeAfterSelectedDeviceLoss()
+    try await scenarios.testAutomaticHandoffRequiresOneEnabledAlternative()
+    try await scenarios.testAutomaticHandoffDoesNotOverrideOffOnOrCompanion()
     try await scenarios.testReleaseRestoresRouteAndResumesWithoutDSPLifecycleCalls()
     try await scenarios.testReleaseResumeRetainsForcedPolicyAndSelection()
     try await scenarios.testReleaseResumesOnlyOnGenuineDeviceReconnect()
@@ -1167,5 +1263,5 @@ private func assertNil(_ value: Any?, file: StaticString = #file, line: UInt = #
     try await scenarios.testManualOnLossForceReconnectIgnoresOptionalAutoTrigger()
     try await scenarios.testExternalOutputSelectionIgnoresBothHardwareNotificationOrders()
     try await scenarios.testExternalOutputSelectionIgnoresUnrelatedOutputTopologyOrders()
-    print("Reconciler checks: 46 event-driven scenarios passed; no live audio or service mutations")
+    print("Reconciler checks: 50 event-driven scenarios passed; no live audio or service mutations")
 }

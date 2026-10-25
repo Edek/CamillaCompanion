@@ -235,6 +235,55 @@ import AutoAudioPlatform
     let inspection = try await transport(external).inspect(profile: profile, paths: [file.path])
     try check(inspection.activePath == nil && inspection.activeTitle == "Original" && inspection.entries.first?.available == true,
               "An unsaved external config change cannot claim the filename preset is active")
+
+    let currentGain = -1.3500384943706887
+    let parserRoundTripGain = -1.350038494370689
+    let tinyFloatRoundTripMatches = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"title":"Warm","filters":{"gain":{"value":-1.3500384943706887}}}"#,
+        candidateConfiguration: #"{"title":"Warm","filters":{"gain":{"value":-1.350038494370689}}}"#)
+    let materialGainChangeDoesNotMatch = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"filters":{"gain":-1.3500384943706887}}"#,
+        candidateConfiguration: #"{"filters":{"gain":-1.349038494370689}}"#)
+    let fiveULPDifferenceDoesNotMatch = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"gain":1.0}"#,
+        candidateConfiguration: #"{"gain":1.0000000000000011}"#)
+    let integerFloatTypesDoNotMatch = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"channels":2}"#,
+        candidateConfiguration: #"{"channels":2.0}"#)
+    let booleanNumberTypesDoNotMatch = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"enabled":true}"#,
+        candidateConfiguration: #"{"enabled":1}"#)
+    let structuralChangeDoesNotMatch = PresetConfigurationIdentity.matches(
+        activeConfiguration: #"{"filters":["left","right"]}"#,
+        candidateConfiguration: #"{"filters":["right","left"]}"#)
+    try check(tinyFloatRoundTripMatches && !materialGainChangeDoesNotMatch && !fiveULPDifferenceDoesNotMatch,
+              "Preset identity tolerates only a few adjacent floating-point values")
+    try check(!integerFloatTypesDoNotMatch && !booleanNumberTypesDoNotMatch && !structuralChangeDoesNotMatch,
+              "Preset identity preserves integer, Boolean, and ordered structure differences")
+
+    let roundTrip = PresetWireFixture(); roundTrip.dialect = .v5; roundTrip.path = file.path
+    roundTrip.current["title"] = "Warm"
+    roundTrip.target = roundTrip.current
+    var roundTripFilters = roundTrip.current["filters"] as! [String: [String: Any]]
+    roundTripFilters["gain"]?["parameters"] = ["gain": currentGain]
+    roundTrip.current["filters"] = roundTripFilters
+    roundTripFilters["gain"]?["parameters"] = ["gain": parserRoundTripGain]
+    roundTrip.target["filters"] = roundTripFilters
+    let roundTripInspection = try await transport(roundTrip).inspect(profile: profile, paths: [file.path])
+    try check(roundTripInspection.activePath == file.path && roundTripInspection.entries.first?.available == true,
+              "v5 preset inspection recognizes the same preset after a one-ULP YAML/JSON gain round-trip")
+
+    let changedGain = PresetWireFixture(); changedGain.dialect = .v5; changedGain.path = file.path
+    changedGain.current["title"] = "Warm"
+    changedGain.target = changedGain.current
+    var changedFilters = changedGain.current["filters"] as! [String: [String: Any]]
+    changedFilters["gain"]?["parameters"] = ["gain": currentGain]
+    changedGain.current["filters"] = changedFilters
+    changedFilters["gain"]?["parameters"] = ["gain": currentGain + 0.001]
+    changedGain.target["filters"] = changedFilters
+    let changedGainInspection = try await transport(changedGain).inspect(profile: profile, paths: [file.path])
+    try check(changedGainInspection.activePath == nil && changedGainInspection.entries.first?.available == true,
+              "v5 preset inspection still reports a material live gain difference as external")
     let canceled = PresetWireFixture(); canceled.holdForward = true
     let cancellationTransport = transport(canceled)
     let pending = Task { try await cancellationTransport.apply(path: file.path, profile: profile) }

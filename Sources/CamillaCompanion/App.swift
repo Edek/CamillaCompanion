@@ -195,11 +195,12 @@ final class InteractiveSession {
     private let hud: FeedbackHUD
     private let uiPreferencesStore: JSONUIPreferencesStore
     private let fallbackPreferencesStore: JSONFallbackPreferencesStore
+    private lazy var interfaceProfileStore = InterfaceProfileStore(configurationURL: options.configURL)
     private var fallbackPreferencesError: String?
     private var uiPreferences = UIPreferences()
     private var uiPreferencesError: String?
     private var confirmedGUIAbsentProfiles = Set<String>()
-    private let gui: GUIController
+    private var gui: GUIController
     private let aux: AuxController
     private let presets: PresetController
     private var commandServer: GUICommandServer?
@@ -208,12 +209,14 @@ final class InteractiveSession {
     private var auxTargetID: String?
     private var auxTargetReady = false
     private let dspService: LaunchdDSPManager
-    private let engine: Reconciler
-    private let configuration: Configuration
+    private var engine: Reconciler
+    private var configuration: Configuration
     private let options: Options
     private var signalSources: [DispatchSourceSignal] = []
     private var inputBuffer = Data()
     private var shuttingDown = false
+    private var interfaceActivationInProgress = false
+    private var runtimeRetired = false
     private var panelRequested = false
     private var instanceLock: ControllerInstanceLock?
     private let timings = SessionTransitionTimings()
@@ -258,8 +261,15 @@ final class InteractiveSession {
                             companionProfileID: uiPreferences.companionProfileID, log: log)
         hud.setSilentMode(uiPreferences.silentMode)
 
+        bindRuntimeCallbacks()
+
+        aux.onChange = { [weak self] snapshot in self?.menuBar?.updateAux(snapshot) }
+        presets.onChange = { [weak self] snapshot in self?.menuBar?.updatePresets(snapshot) }
+    }
+
+    private func bindRuntimeCallbacks() {
         engine.onExternalOutputSelection = { [weak self] profileID, device in
-            guard let self, !self.shuttingDown, self.uiPreferences.followMacOSOutput else { return }
+            guard let self, !self.shuttingDown, !self.interfaceActivationInProgress, self.uiPreferences.followMacOSOutput else { return }
             do {
                 if let error = self.fallbackPreferencesError { throw SwitcherError.message(error) }
                 let previous = self.engine.fallbackPreference(profileID: profileID)
@@ -305,8 +315,180 @@ final class InteractiveSession {
             self?.recordGUITiming(status)
             self?.publishStatus()
         }
-        aux.onChange = { [weak self] snapshot in self?.menuBar?.updateAux(snapshot) }
-        presets.onChange = { [weak self] snapshot in self?.menuBar?.updatePresets(snapshot) }
+    }
+
+    private func interfaceProfilesHandlers() -> InterfaceProfilesHandlers {
+        InterfaceProfilesHandlers(load: { [weak self] in
+            guard let self else { throw SwitcherError.message("Controller unavailable") }
+            let snapshot = try CoreAudioManager().snapshot()
+            return try self.interfaceProfileStore.snapshot(devices: snapshot.devices, activeProfileID: self.verifiedActiveProfileID,
+                selectedProfileID: self.currentProfileID, loadedProfiles: self.configuration.profiles)
+        }, save: { [weak self] draft in
+            guard let self, !self.shuttingDown else { throw SwitcherError.message("Controller shutting down") }
+            guard !self.interfaceActivationInProgress else { throw SwitcherError.message("Interface profile activation is in progress.") }
+            let snapshot = try CoreAudioManager().snapshot()
+            _ = try await self.interfaceProfileStore.save(draft, devices: snapshot.devices)
+            return try self.interfaceProfileStore.snapshot(devices: snapshot.devices, activeProfileID: self.verifiedActiveProfileID,
+                selectedProfileID: self.currentProfileID, loadedProfiles: self.configuration.profiles)
+        }, remove: { [weak self] id in
+            guard let self, !self.shuttingDown else { throw SwitcherError.message("Controller shutting down") }
+            guard !self.interfaceActivationInProgress else { throw SwitcherError.message("Interface profile activation is in progress.") }
+            if id == self.liveProfileID || id == self.engine.selectedID {
+                throw SwitcherError.message("The selected or live profile cannot be removed. Use another profile first.")
+            }
+            _ = try self.interfaceProfileStore.remove(id: id)
+            let snapshot = try CoreAudioManager().snapshot()
+            return try self.interfaceProfileStore.snapshot(devices: snapshot.devices, activeProfileID: self.verifiedActiveProfileID,
+                selectedProfileID: self.currentProfileID, loadedProfiles: self.configuration.profiles)
+        }, activate: { [weak self] id in
+            guard let self, !self.shuttingDown else { throw SwitcherError.message("Controller shutting down") }
+            try await self.activateInterfaceProfile(id: id)
+            let snapshot = try CoreAudioManager().snapshot()
+            return try self.interfaceProfileStore.snapshot(devices: snapshot.devices, activeProfileID: self.verifiedActiveProfileID,
+                selectedProfileID: self.currentProfileID, loadedProfiles: self.configuration.profiles)
+        })
+    }
+
+    private var liveProfileID: String? {
+        switch engine.state {
+        case .active(let id), .starting(let id), .stopping(let id): return id
+        default: return nil
+        }
+    }
+
+    private var currentProfileID: String? { engine.selectedID ?? liveProfileID }
+    private var verifiedActiveProfileID: String? {
+        if case .active(let id) = engine.state { return id }; return nil
+    }
+
+    private func activateInterfaceProfile(id: String) async throws {
+        guard !interfaceActivationInProgress else {
+            throw SwitcherError.message("An interface profile change is already in progress.")
+        }
+        interfaceActivationInProgress = true
+        defer {
+            interfaceActivationInProgress = false
+            if !shuttingDown {
+                latestSnapshot = try? CoreAudioManager().snapshot()
+                publishStatus()
+            }
+        }
+        do {
+            try await performInterfaceProfileActivation(id: id)
+        } catch {
+            lastCommandError = error.localizedDescription
+            if !shuttingDown {
+                bindRuntimeCallbacks()
+            }
+            throw error
+        }
+    }
+
+    private func performInterfaceProfileActivation(id: String) async throws {
+        let deviceSnapshot = try CoreAudioManager().snapshot()
+        let saved = try ConfigurationLoader.load(from: options.configURL)
+        guard let target = saved.profiles.first(where: { $0.id == id }) else {
+            throw SwitcherError.message("The saved interface profile no longer exists. Refresh the list and try again.")
+        }
+        guard !engine.automaticSwitching || target.managedFeedUID != nil else {
+            throw SwitcherError.message("This profile supports Companion Mode only. Turn Automatic Switching off before using it.")
+        }
+        guard target.deviceRolesAvailable(in: deviceSnapshot, automaticSwitching: engine.automaticSwitching,
+            requireTrigger: engine.mode != .forceOn) else {
+            throw SwitcherError.message("The profile needs its connection trigger, DSP input and DSP output. Connect the required devices and refresh.")
+        }
+        try ConfigurationLoader.validate(saved)
+
+        let retainedMode = engine.mode
+        let catalogChanged = saved.profiles != configuration.profiles || runtimeRetired
+        if !catalogChanged {
+            let wasReleased = engine.released
+            engine.setMode(retainedMode, profileID: id)
+            if wasReleased { engine.release() }
+            persistCompanionProfileSelection(id)
+            lastCommandError = nil
+            publishStatus()
+            return
+        }
+
+        var guiOverrides: [String: GUIPolicy] = [:]
+        for profile in configuration.profiles where profile.gui != nil {
+            guiOverrides[profile.id] = try gui.status(profileID: profile.id).policy
+        }
+        let oldEngine = engine
+        let oldGUI = gui
+        let wasReleased = oldEngine.released
+        presets.cancel()
+        aux.cancelVolumeDrag(verifyCurrentValues: false)
+        await aux.drainForDSPChange()
+        guard !shuttingDown else { throw SwitcherError.message("Controller is shutting down; profile activation was cancelled.") }
+        aux.activate(profile: nil, ready: false)
+        menuBar?.updateSignalTarget(profile: nil, ready: false)
+        oldEngine.onSnapshot = nil; oldEngine.onExternalOutputSelection = nil
+        oldEngine.onFeedback = nil; oldEngine.onStateChange = nil; oldEngine.onControlChange = nil
+        oldGUI.onFeedback = nil; oldGUI.onStatusChange = nil; oldGUI.onLog = nil
+
+        await oldGUI.shutdown()
+        guard !shuttingDown else { throw SwitcherError.message("Controller is shutting down; profile activation was cancelled.") }
+        let remainingGUI = configuration.profiles.compactMap { profile -> String? in
+            guard profile.gui != nil, let status = try? oldGUI.status(profileID: profile.id), status.observed != .stopped else { return nil }
+            return profile.id
+        }
+        await oldEngine.shutdown()
+        runtimeRetired = true
+        guard !shuttingDown else { throw SwitcherError.message("Controller is shutting down; profile activation was cancelled.") }
+        guard case .idle = oldEngine.state else {
+            throw SwitcherError.message("The current DSP session did not shut down cleanly: \(oldEngine.state). The new profile remains pending.")
+        }
+        guard remainingGUI.isEmpty else {
+            throw SwitcherError.message("CamillaGUI did not stop for profile(s) \(remainingGUI.joined(separator: ", ")). The new profile remains pending.")
+        }
+
+        let nextGUI = GUIController(profiles: saved.profiles,
+            service: LaunchdGUIManager(directory: options.stateURL.deletingLastPathComponent().appendingPathComponent("GUIJobs")))
+        let nextEngine = Reconciler(profiles: saved.profiles, audio: CoreAudioManager(), dsp: dspService,
+            store: JSONRouteStore(url: options.stateURL), fallbackPreferences: oldEngine.fallbackPreferences,
+            automaticSwitching: oldEngine.automaticSwitching, companionMode: retainedMode,
+            companionProfileID: id, log: log)
+        gui = nextGUI; engine = nextEngine; configuration = saved
+        bindRuntimeCallbacks()
+        do {
+            for (profileID, policy) in guiOverrides where saved.profiles.contains(where: { $0.id == profileID && $0.gui != nil }) {
+                if policy != .automatic { _ = try await nextGUI.command(policy == .manualOn ? .start : .stop, profileID: profileID) }
+            }
+            guard !shuttingDown else { throw SwitcherError.message("Controller is shutting down; profile activation was cancelled.") }
+            nextEngine.setMode(retainedMode, profileID: id)
+            try nextEngine.start()
+            guard !shuttingDown else { throw SwitcherError.message("Controller is shutting down; profile activation was cancelled.") }
+            if wasReleased { nextEngine.release() }
+        } catch {
+            nextEngine.onSnapshot = nil; nextEngine.onExternalOutputSelection = nil
+            nextEngine.onFeedback = nil; nextEngine.onStateChange = nil; nextEngine.onControlChange = nil
+            nextGUI.onFeedback = nil; nextGUI.onStatusChange = nil; nextGUI.onLog = nil
+            await nextGUI.shutdown()
+            await nextEngine.shutdown()
+            runtimeRetired = true
+            aux.activate(profile: nil, ready: false)
+            menuBar?.updateSignalTarget(profile: nil, ready: false)
+            throw SwitcherError.message("The saved profile could not start. Cleanup was requested; use the profile again to retry: \(error.localizedDescription)")
+        }
+        runtimeRetired = false
+        persistCompanionProfileSelection(id)
+        lastCommandError = nil
+        publishStatus()
+    }
+
+    private func persistCompanionProfileSelection(_ id: String) {
+        var updated = uiPreferences
+        updated.companionProfileID = id
+        do { try uiPreferencesStore.save(updated) }
+        catch {
+            uiPreferencesError = "Could not save selected interface profile: " + error.localizedDescription
+            log(uiPreferencesError!)
+            return
+        }
+        uiPreferences = updated
+        uiPreferencesError = nil
     }
 
     func start() async {
@@ -328,6 +510,7 @@ final class InteractiveSession {
                     return await self.execute(request)
                 }, guiCommand: { [weak self] request in
                     guard let self, !self.shuttingDown else { return GUIReply(error: "Controller shutting down") }
+                    guard !self.interfaceActivationInProgress || request.command == .status else { return GUIReply(error: "Interface profile activation is in progress.") }
                     do { return GUIReply(status: try await self.gui.command(request.command, profileID: request.profileID)) }
                     catch { return GUIReply(error: error.localizedDescription) }
                 }, quit: { [weak self] in Task { await self?.stop(code: EXIT_SUCCESS) } })
@@ -338,11 +521,13 @@ final class InteractiveSession {
                     Application.showSetup(configurationURL: configurationURL, runtimeStateURL: stateURL)
                 })
                 menuBar?.setSettingsDirectory(options.stateURL.deletingLastPathComponent())
+                menuBar?.setInterfaceProfilesHandlers(interfaceProfilesHandlers())
                 menuBar?.setDiagnosticsProvider({ [weak self] in
                     self?.diagnosticReport() ?? "Controller unavailable."
                 }, dspVersion: { [weak self] in self?.detectedDSPVersionText() ?? "Unavailable" })
                 menuBar?.setFallbackHandler { [weak self] profileID, preference in
-                    guard let self, !self.shuttingDown,
+                    guard let self, !self.interfaceActivationInProgress else { throw SwitcherError.message("Interface profile activation is in progress.") }
+                    guard !self.shuttingDown,
                           self.controllerStatus().selectedProfileID == profileID else {
                         throw SwitcherError.message("Audio profile changed before saving fallback output.")
                     }
@@ -375,6 +560,7 @@ final class InteractiveSession {
                     try await self.aux.setMuteForUser(id: id, muted: value, intent: intent)
                 }, preferences: { [weak self] preferences in
                     guard let self, !self.shuttingDown else { throw SwitcherError.message("Controller shutting down") }
+                    guard !self.interfaceActivationInProgress else { throw SwitcherError.message("Interface profile activation is in progress.") }
                     try self.aux.setPreferences(preferences)
                 })
                 menuBar?.setAuxPreciseHandlers(prepare: { [weak self] id, value in
@@ -388,6 +574,7 @@ final class InteractiveSession {
                 })
                 menuBar?.setUIPreferences(uiPreferences, error: uiPreferencesError) { [weak self] preferences in
                     guard let self, !self.shuttingDown else { throw SwitcherError.message("Controller shutting down") }
+                    guard !self.interfaceActivationInProgress else { throw SwitcherError.message("Interface profile activation is in progress.") }
                     guard !self.presets.snapshot.busy || preferences.presetsFolderPath == self.uiPreferences.presetsFolderPath else {
                         throw SwitcherError.message("Wait for the preset command before changing its folder.")
                     }
@@ -440,6 +627,7 @@ final class InteractiveSession {
                 return await self.execute(request)
             }) { [weak self] request in
                 guard let self, !self.shuttingDown else { return GUIReply(error: "Controller shutting down") }
+                guard !self.interfaceActivationInProgress || request.command == .status else { return GUIReply(error: "Interface profile activation is in progress.") }
                 do { return GUIReply(status: try await self.gui.command(request.command, profileID: request.profileID)) }
                 catch { return GUIReply(error: error.localizedDescription) }
             }
@@ -474,6 +662,9 @@ final class InteractiveSession {
                 do {
                     let request = try GUIArguments(Array(words.dropFirst())).request
                     Task {
+                        guard !interfaceActivationInProgress || request.command == .status else {
+                            writeError("Interface profile activation is in progress."); return
+                        }
                         do { try printGUIReply(GUIReply(status: try await gui.command(request.command, profileID: request.profileID)), command: request.command) }
                         catch { writeError(error.localizedDescription) }
                     }
@@ -517,8 +708,8 @@ final class InteractiveSession {
         switch engine.state { case .active(let id), .starting(let id), .stopping(let id): activeID = id; default: activeID = nil }
         let selected = engine.selectedID ?? activeID
         let entries = configuration.profiles.map { profile in
-            let outputs = Set(snapshot?.devices.filter(\.hasOutput).map(\.uid) ?? [])
-            let available = outputs.contains(profile.captureUID) && outputs.contains(profile.playbackUID)
+            let available = snapshot.map { profile.deviceRolesAvailable(in: $0, automaticSwitching: engine.automaticSwitching,
+                requireTrigger: engine.mode != .forceOn) } ?? false
             let reason: String?
             let installation: GUIInstallationState
             if let config = profile.gui {
@@ -532,7 +723,7 @@ final class InteractiveSession {
             }
             return ControllerProfile(id: profile.id, name: profile.name, available: available,
                                      guiUnavailableReason: reason, gui: try? gui.status(profileID: profile.id),
-                                     captureUID: profile.captureUID, guiInstallationState: installation)
+                                     captureUID: profile.managedFeedUID, guiInstallationState: installation)
         }
         // Active lifecycle state follows finite configuration/readiness verification.
         // Resolve its playback UID from the existing event snapshot, without a poll.
@@ -549,7 +740,7 @@ final class InteractiveSession {
             automaticSwitching: engine.automaticSwitching)
     }
     private var auxControlsAllowed: Bool {
-        guard !shuttingDown, let id = aux.snapshot.profileID else { return false }
+        guard !shuttingDown, !interfaceActivationInProgress, let id = aux.snapshot.profileID else { return false }
         return engine.permitsDSPControls(profileID: id)
     }
     private func publishStatus() {
@@ -560,8 +751,9 @@ final class InteractiveSession {
             dspPlaybackUID: status.dspPlaybackUID, dspPlaybackName: status.dspPlaybackName,
             reconfiguringAudio: engine.processingReconfiguration, automaticSwitching: engine.automaticSwitching)
         menuBar?.update(presentation)
-        let captureUIDs = Set(configuration.profiles.map(\.captureUID))
-        let fallbackDevices = latestSnapshot?.devices.filter { $0.hasOutput && !captureUIDs.contains($0.uid) } ?? []
+        menuBar?.updateInterfaceDevices(snapshot: latestSnapshot)
+        let feedUIDs = Set(configuration.profiles.compactMap(\.managedFeedUID))
+        let fallbackDevices = latestSnapshot?.devices.filter { $0.hasOutput && !feedUIDs.contains($0.uid) } ?? []
         let automaticOutput = presentation.selectedProfileID.flatMap { id in
             latestSnapshot.flatMap { engine.suggestedAutomaticFallbackOutput(profileID: id, snapshot: $0) }
         }
@@ -696,6 +888,9 @@ final class InteractiveSession {
             guard let menuBar else { return ControllerReply(error: "This controller has no menu panel.") }
             menuBar.show()
             return ControllerReply(status: controllerStatus())
+        }
+        if interfaceActivationInProgress && request.command != .status && request.command != .profiles {
+            return ControllerReply(error: "Interface profile activation is in progress.")
         }
         do {
             if let id = request.profileID, !configuration.profiles.contains(where: { $0.id == id }) {

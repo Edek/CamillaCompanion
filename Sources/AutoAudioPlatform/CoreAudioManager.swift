@@ -22,7 +22,8 @@ import AutoAudioCore
             devices.append(AudioDevice(
                 uid: try string(id, kAudioDevicePropertyDeviceUID),
                 name: try string(id, kAudioObjectPropertyName),
-                hasOutput: try hasOutput(id),
+                inputChannels: try channelCount(id, scope: kAudioDevicePropertyScopeInput),
+                outputChannels: try channelCount(id, scope: kAudioDevicePropertyScopeOutput),
                 isBuiltIn: try uint32(id, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBuiltIn
             ))
         }
@@ -73,18 +74,26 @@ import AutoAudioCore
         for id in Array(deviceRegistrations.keys) where !present.contains(id) { deviceRegistrations.removeValue(forKey: id) }
         for id in ids where deviceRegistrations[id] == nil {
             var added: [ListenerRegistration] = []
-            for selector in [kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyNominalSampleRate] {
-                var property = address(selector)
+            let changes: [(AudioObjectPropertySelector, AudioObjectPropertyScope)] = [
+                (kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal),
+                (kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal),
+                (kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeInput),
+                (kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeOutput)
+            ]
+            for (selector, scope) in changes {
+                var property = address(selector, scope: scope)
                 if AudioObjectHasProperty(id, &property) {
-                    added.append(try listen(id, selector, event: .devicesChanged))
+                    added.append(try listen(id, selector, scope: scope, event: .devicesChanged))
                 }
             }
             deviceRegistrations[id] = added
         }
     }
 
-    private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, event: AudioEvent) throws -> ListenerRegistration {
-        var property = address(selector)
+    private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+                        event: AudioEvent) throws -> ListenerRegistration {
+        var property = address(selector, scope: scope)
         let generation = monitoringGeneration
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor [weak self] in
@@ -116,11 +125,17 @@ import AutoAudioCore
         return Array(ids.prefix(Int(size) / MemoryLayout<AudioDeviceID>.size))
     }
 
-    private func hasOutput(_ id: AudioDeviceID) throws -> Bool {
-        var property = address(kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeOutput)
+    private func channelCount(_ id: AudioDeviceID, scope: AudioObjectPropertyScope) throws -> Int {
+        var property = address(kAudioDevicePropertyStreamConfiguration, scope: scope)
+        guard AudioObjectHasProperty(id, &property) else { return 0 }
         var size: UInt32 = 0
-        try check(AudioObjectGetPropertyDataSize(id, &property, 0, nil, &size), "Read output streams for device \(id)")
-        return size > 0
+        try check(AudioObjectGetPropertyDataSize(id, &property, 0, nil, &size), "Read stream configuration for device \(id)")
+        guard size >= UInt32(MemoryLayout<AudioBufferList>.size) else { return 0 }
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { storage.deallocate() }
+        try check(AudioObjectGetPropertyData(id, &property, 0, nil, &size, storage), "Read stream configuration for device \(id)")
+        let buffers = UnsafeMutableAudioBufferListPointer(storage.assumingMemoryBound(to: AudioBufferList.self))
+        return buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
     private func defaultUID(_ selector: AudioObjectPropertySelector) throws -> String? {
@@ -133,7 +148,8 @@ import AutoAudioCore
         guard matches.count == 1, var id = matches.first else {
             throw SwitcherError.message("Output UID '\(uid)' is missing or ambiguous.")
         }
-        guard try uint32(id, kAudioDevicePropertyDeviceIsAlive) != 0, try hasOutput(id) else {
+        guard try uint32(id, kAudioDevicePropertyDeviceIsAlive) != 0,
+              try channelCount(id, scope: kAudioDevicePropertyScopeOutput) > 0 else {
             throw SwitcherError.message("Device '\(uid)' is not an available output.")
         }
         var property = address(selector)

@@ -48,12 +48,13 @@ import AutoAudioCore
     }
 }
 
-public enum SettingsTab: Int { case general, mainOutput, auxOutputs }
+public enum SettingsTab: Int { case general, mainOutput, auxOutputs, interfaces }
 
 /// Event-driven settings. The owner persists and applies each successful change.
 @MainActor public final class NativeSettingsWindow: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     private let tabs = NSTabView()
     private var auxContent: AuxFaderSettingsContent?
+    private var interfacesContent: InterfacesSettingsContent?
     private var latestAuxSnapshot: AuxFaderSnapshot?
     private let onSaveAux: ((String, AuxPreferences) async throws -> Void)?
     private var selectedProfileID: String?
@@ -109,6 +110,7 @@ public enum SettingsTab: Int { case general, mainOutput, auxOutputs }
                 revealSettingsDirectory: ((URL) -> Bool)? = nil,
                 onSaveAux: ((String, AuxPreferences) async throws -> Void)? = nil,
                 onRefreshFaders: (() -> Void)? = nil,
+                interfaceProfiles: InterfaceProfilesHandlers? = nil,
                 onChange: @escaping (UIPreferences) throws -> Void) {
         self.onSaveAux = onSaveAux
         self.latestAuxSnapshot = auxSnapshot
@@ -308,6 +310,10 @@ public enum SettingsTab: Int { case general, mainOutput, auxOutputs }
         } else {
             addTab("Aux Outputs", .auxOutputs, NSTextField(wrappingLabelWithString: "Select a profile to configure Aux Outputs."))
         }
+        let interfaceContent = InterfacesSettingsContent(handlers: interfaceProfiles,
+            presetsFolder: { [weak self] in self?.preferences.presetsFolderPath })
+        interfacesContent = interfaceContent
+        addTab("Interfaces", .interfaces, interfaceContent)
         errorLabel.translatesAutoresizingMaskIntoConstraints = false
         errorLabel.isHidden = true
         let page = NSStackView(views: [errorLabel, tabs])
@@ -340,6 +346,18 @@ public enum SettingsTab: Int { case general, mainOutput, auxOutputs }
         field.setAccessibilityHelp(field.toolTip)
         numberFields[title] = field
         return row
+    }
+
+    public func updateInterfaceDevices(_ devices: [AudioDevice]) {
+        interfacesContent?.updateDevices(devices)
+    }
+
+    package func interfaceEditorForVerification(_ draft: InterfaceProfileDraft) -> InterfaceProfileEditor? {
+        interfacesContent?.editorForVerification(draft)
+    }
+
+    public func updateInterfaceRuntime(activeID: String?, selectedID: String?) {
+        interfacesContent?.updateRuntime(activeID: activeID, selectedID: selectedID)
     }
 
     public func updateProfile(id: String?, name: String?) {

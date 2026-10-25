@@ -178,7 +178,10 @@ import Yams
                 let candidate = try await candidate(path, url: url, profile: profile, current: current, deadline: deadline, token: token)
                 let config = candidate.configuration
                 configurations[path] = config
-                if path == current.path { activeMatchesFile = try json(object(config)) == json(object(current.config)) }
+                if path == current.path {
+                    activeMatchesFile = PresetConfigurationIdentity.matches(
+                        activeConfiguration: current.config, candidateConfiguration: config)
+                }
                 if let value = try object(config)["title"] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { title = value }
                 entries.append(PresetEntry(path: path, title: title, requiresAudioRestart: candidate.impact.requiresAudioRestart,
                     settingChanges: candidate.impact.settingChanges))
